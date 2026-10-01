@@ -87,6 +87,58 @@ def find_engine_exe(app_dir: str) -> str:
     return ""
 
 
+def kill_running_engine():
+    """Tắt tiến trình Engine cũ đang chạy và giải phóng cổng 8000 mà KHÔNG tắt Launcher hiện tại."""
+    current_pid = os.getpid()
+
+    # 1. Tắt tiến trình đang chiếm cổng 8000 (nếu có)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex(("127.0.0.1", 8000)) == 0:
+                subprocess.run(
+                    ["powershell", "-Command", "Get-Process -Id (Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+    except Exception:
+        pass
+
+    # 2. Tìm và tắt các tiến trình OpenCutStudio.exe khác (ngoại trừ chính Launcher hiện tại)
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq OpenCutStudio.exe", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        ).stdout
+        for line in out.strip().splitlines():
+            parts = [p.strip(' "') for p in line.split(",")]
+            if len(parts) >= 2 and parts[1].isdigit():
+                pid = int(parts[1])
+                if pid != current_pid:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid), "/T"],
+                        capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
+    except Exception:
+        pass
+
+    # 3. Tắt các tiến trình phụ thuộc (ffmpeg.exe, ffprobe.exe)
+    for proc_name in ["ffmpeg.exe", "ffprobe.exe"]:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", proc_name],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        except Exception:
+            pass
+
+    time.sleep(0.5)
+
+
 class LauncherApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -309,8 +361,13 @@ class LauncherApp(tk.Tk):
                 self.after(0, lambda: self.footer_lbl.config(text=f"Cài đặt mới: v{remote_tag}"))
 
             success = self.download_and_extract_engine(download_url, asset_size, remote_tag)
-            if not success and not has_engine:
-                messagebox.showerror("Lỗi tải Engine", "Quá trình tải gói Engine thất bại. Vui lòng kiểm tra kết nối mạng.")
+            if not success:
+                self.set_status(f"Lỗi: Không thể hoàn tất cài đặt bản v{remote_tag}", 0)
+                messagebox.showerror(
+                    "Lỗi cài đặt",
+                    f"Quá trình tải hoặc giải nén bản v{remote_tag} thất bại.\n\n"
+                    "Vui lòng tắt các tiến trình OpenCutStudio đang chạy và thử lại."
+                )
                 self.quit()
                 return
 
@@ -437,35 +494,28 @@ class LauncherApp(tk.Tk):
                 print(f"[Launcher] Download error: {e}")
                 return False
 
-        # 4. Đóng mọi tiến trình OpenCutStudio cũ đang chạy để tránh lỗi Permission denied khi ghi đè
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "OpenCutStudio.exe", "/T"],
-                capture_output=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
-            time.sleep(0.5)
-        except Exception:
-            pass
+        # 4. Đóng mọi tiến trình OpenCutStudio cũ đang chạy (trừ chính Launcher hiện tại)
+        kill_running_engine()
 
         # 5. Giải nén Engine vào thư mục app
-        self.set_status(f"Đang giải nén bộ Engine v{tag_version}... Vui lòng đợi trong giây lát!", 88)
+        self.set_status(f"Đang chuẩn bị giải nén bộ Engine v{tag_version}...", 86)
         app_dir = os.path.join(self.install_dir, "app")
         os.makedirs(app_dir, exist_ok=True)
 
         try:
             with zipfile.ZipFile(target_zip_to_extract, "r") as zf:
-                namelist = zf.namelist()
+                infolist = [m for m in zf.infolist() if not m.filename.endswith("/")]
+                total_files = max(1, len(infolist))
                 prefix = ""
-                parts = namelist[0].replace("\\", "/").split("/")
-                if len(parts) > 1 and parts[0] and all(n.startswith(parts[0] + "/") for n in namelist if n.strip()):
+                parts = zf.namelist()[0].replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] and all(n.startswith(parts[0] + "/") for n in zf.namelist() if n.strip()):
                     prefix = parts[0] + "/"
 
-                for member in zf.infolist():
+                for idx, member in enumerate(infolist):
                     rel = member.filename
                     if prefix and rel.startswith(prefix):
                         rel = rel[len(prefix):]
-                    if not rel or rel.endswith("/"):
+                    if not rel:
                         continue
 
                     # Giữ nguyên cấu hình người dùng cũ
@@ -476,8 +526,22 @@ class LauncherApp(tk.Tk):
 
                     target = os.path.join(app_dir, rel)
                     os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+
+                    written = False
+                    for _ in range(3):
+                        try:
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                            written = True
+                            break
+                        except PermissionError:
+                            time.sleep(0.3)
+                    if not written:
+                        raise PermissionError(f"Không thể ghi file: {rel}. Vui lòng tắt các ứng dụng đang mở file này.")
+
+                    if idx % 10 == 0 or idx == total_files - 1:
+                        pct = 86 + int(((idx + 1) / total_files) * 11)
+                        self.set_status(f"Đang giải nén Engine v{tag_version}: {idx + 1}/{total_files} file ({pct}%)...", pct)
 
             self.set_local_version(tag_version)
             self.set_status(f"Cài đặt hoàn tất! Đang khởi động v{tag_version}...", 98)
@@ -497,17 +561,8 @@ class LauncherApp(tk.Tk):
         """Khởi động file OpenCutStudio.exe (Engine độc lập mã máy)."""
         engine_dir = os.path.dirname(engine_exe)
 
-        # Dọn port 8000 nếu đang có process cũ chiếm giữ
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                if s.connect_ex(("127.0.0.1", 8000)) == 0:
-                    subprocess.run(
-                        ["powershell", "-Command", "Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
-                        capture_output=True,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    )
-        except Exception:
-            pass
+        # Dọn sạch cổng 8000 và tiến trình cũ
+        kill_running_engine()
 
         try:
             # Khởi chạy engine_exe trong thư mục của nó
@@ -521,11 +576,25 @@ class LauncherApp(tk.Tk):
             self.quit()
             return
 
-        # Chờ port 8000 sẵn sàng và mở giao diện
-        self.set_status("Đang mở giao diện Studio...", 100)
-        time.sleep(2.5)
+        # Chờ port 8000 sẵn sàng (tối đa 35 giây)
+        self.set_status("Đang nạp AI Engine & khởi động Studio...", 97)
+        start_wait = time.time()
+        ready = False
+        while time.time() - start_wait < 35:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.8)
+                    if s.connect_ex(("127.0.0.1", 8000)) == 0:
+                        ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.8)
 
         # Mở Edge/Chrome ở dạng cửa sổ Desktop app
+        self.set_status("Đang mở giao diện Studio...", 100)
+        time.sleep(0.5)
+
         url = "http://127.0.0.1:8000"
         try:
             subprocess.Popen(["msedge.exe", f"--app={url}", "--window-size=1440,900"],
@@ -538,7 +607,7 @@ class LauncherApp(tk.Tk):
                 import webbrowser
                 webbrowser.open(url)
 
-        time.sleep(1.0)
+        time.sleep(2.0)
         self.destroy()
 
 
