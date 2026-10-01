@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.1", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2125,21 +2125,48 @@ def cut_candidate_clip(req: Dict[str, Any]):
         or chosen.get("start_ts")
         or "00:00:00"
     )
-    vid_dur = (getattr(app_state, "yt_metadata", {}).get(video_path_str, {}).get("duration", 0.0)
-               if is_yt else (get_video_duration(v_path) or 0.0))
+    if is_yt:
+        vid_dur = float(getattr(app_state, "yt_metadata", {}).get(video_path_str, {}).get("duration", 0.0) or 0.0)
+        if vid_dur <= 0:
+            try:
+                info = get_youtube_info(video_path_str, cookies_browser=app_state.config.get("youtube_cookie_browser", None))
+                if info:
+                    if not hasattr(app_state, "yt_metadata"):
+                        app_state.yt_metadata = {}
+                    app_state.yt_metadata[video_path_str] = info
+                    vid_dur = float(info.get("duration", 0.0) or 0.0)
+            except Exception:
+                pass
+    else:
+        vid_dur = get_video_duration(v_path) or 0.0
 
     # Apply trim_start_offset
     start_sec = ts_to_seconds(start_ts)
+    if vid_dur > 0 and start_sec > vid_dur:
+        parts = start_ts.strip().split(":")
+        if len(parts) == 3:
+            alt_sec = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+            if alt_sec <= vid_dur:
+                start_sec = alt_sec
+        elif len(parts) == 2:
+            alt_sec = int(parts[0]) * 60 + float(parts[1])
+            if alt_sec <= vid_dur:
+                start_sec = alt_sec
+
     if abs(trim_start_offset) > 0.01:
         start_sec = max(0.0, start_sec + trim_start_offset)
-        h = int(start_sec // 3600)
-        m = int((start_sec % 3600) // 60)
-        s = start_sec % 60
-        start_ts = f"{h:02d}:{m:02d}:{s:06.3f}"
+
+    if vid_dur > 0:
+        start_sec = min(start_sec, max(0.0, vid_dur - 1.0))
+
+    h = int(start_sec // 3600)
+    m = int((start_sec % 3600) // 60)
+    s = start_sec % 60
+    start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
 
     # Clamp clip duration so it never extends beyond the source video
     if vid_dur > 0:
-        trim_duration = min(trim_duration, vid_dur - start_sec)
+        trim_duration = min(trim_duration, max(1.0, vid_dur - start_sec))
 
     suggested_titles = chosen.get("suggested_titles", [])
     cand_title = chosen.get("title", "")
@@ -2171,15 +2198,22 @@ def cut_candidate_clip(req: Dict[str, Any]):
     dst  = raw_dir / f"{stem}_clip{chosen.get('id', candidate_idx+1)}_{start_ts.replace(':', '-')}.mp4"
     app_state.log(f"✂️  Cắt → {dst}", "info")
 
-    def _log(level: str, msg: str):
-        app_state.log(msg, level)
+    def _log(*args, **kwargs):
+        if len(args) == 1:
+            app_state.log(str(args[0]), "info")
+        elif len(args) >= 2:
+            app_state.log(str(args[1]), str(args[0]))
+        elif "msg" in kwargs:
+            app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
 
     if is_yt:
         end_sec = start_sec + max(1.0, trim_duration)
+        if vid_dur > 0:
+            end_sec = min(vid_dur, end_sec)
         eh = int(end_sec // 3600)
         em = int((end_sec % 3600) // 60)
         es = end_sec % 60
-        end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}"
+        end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}" if es % 1 else f"{eh:02d}:{em:02d}:{int(es):02d}"
         cookie_browser = app_state.config.get("youtube_cookie_browser", None)
         try:
             download_youtube_section(
@@ -2189,6 +2223,7 @@ def cut_candidate_clip(req: Dict[str, Any]):
                 output_path=str(dst),
                 cookies_browser=cookie_browser,
                 log=_log,
+                vid_duration=vid_dur,
             )
         except Exception as exc:
             app_state.log(f"❌ Tải đoạn YouTube thất bại: {exc}", "error")
@@ -2526,13 +2561,28 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
         raw_dir = Path("output_clips") / "raw_cuts"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
-    def _log(level: str, msg: str):
-        app_state.log(msg, level)
+    def _log(*args, **kwargs):
+        if len(args) == 1:
+            app_state.log(str(args[0]), "info")
+        elif len(args) >= 2:
+            app_state.log(str(args[1]), str(args[0]))
+        elif "msg" in kwargs:
+            app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
 
     if is_yt:
         yt_title = getattr(app_state, "yt_metadata", {}).get(req.video_path, {}).get("title") or "yt_clip"
         stem = sanitize(yt_title)[:30]
-        vid_dur = getattr(app_state, "yt_metadata", {}).get(req.video_path, {}).get("duration", 0.0)
+        vid_dur = float(getattr(app_state, "yt_metadata", {}).get(req.video_path, {}).get("duration", 0.0) or 0.0)
+        if vid_dur <= 0:
+            try:
+                info = get_youtube_info(req.video_path, cookies_browser=app_state.config.get("youtube_cookie_browser", None))
+                if info:
+                    if not hasattr(app_state, "yt_metadata"):
+                        app_state.yt_metadata = {}
+                    app_state.yt_metadata[req.video_path] = info
+                    vid_dur = float(info.get("duration", 0.0) or 0.0)
+            except Exception:
+                pass
     else:
         stem = sanitize(v_path.stem)
         vid_dur = get_video_duration(v_path) or 0.0
@@ -2547,6 +2597,22 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
         )
         base_dur = float(chosen.get("clip_duration") or CLIP_DURATION)
         start_sec = ts_to_seconds(start_ts)
+
+        if vid_dur > 0 and start_sec > vid_dur:
+            parts = start_ts.strip().split(":")
+            if len(parts) == 3:
+                alt_sec = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+                if alt_sec <= vid_dur:
+                    start_sec = alt_sec
+            elif len(parts) == 2:
+                alt_sec = int(parts[0]) * 60 + float(parts[1])
+                if alt_sec <= vid_dur:
+                    start_sec = alt_sec
+            h = int(start_sec // 3600)
+            m = int((start_sec % 3600) // 60)
+            s = start_sec % 60
+            start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
+
         if vid_dur > 0:
             dur = min(base_dur, max(1.0, vid_dur - start_sec))
         else:
@@ -2559,10 +2625,12 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
             app_state.log(f"✂️  [Tất cả] Cắt cảnh #{idx+1} ({start_ts}) → {dst.name}", "info")
             if is_yt:
                 end_sec = start_sec + dur
+                if vid_dur > 0:
+                    end_sec = min(vid_dur, end_sec)
                 eh = int(end_sec // 3600)
                 em = int((end_sec % 3600) // 60)
                 es = end_sec % 60
-                end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}"
+                end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}" if es % 1 else f"{eh:02d}:{em:02d}:{int(es):02d}"
                 cookie_browser = app_state.config.get("youtube_cookie_browser", None)
                 try:
                     download_youtube_section(
@@ -2572,6 +2640,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
                         output_path=str(dst),
                         cookies_browser=cookie_browser,
                         log=_log,
+                        vid_duration=vid_dur,
                     )
                 except Exception as exc:
                     app_state.log(f"❌ Tải đoạn #{idx+1} thất bại: {exc}", "error")
@@ -5456,11 +5525,16 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
     info = None
     try:
         info = get_youtube_info(url, cookies_browser=cookie_browser)
+        if info:
+            if not hasattr(app_state, "yt_metadata"):
+                app_state.yt_metadata = {}
+            app_state.yt_metadata[url] = info
+            app_state.save_session()
     except Exception as e:
         app_state.log(f"Warning fetching YT metadata: {e}", "warn")
 
     vid_title = info.get("title", "YouTube Video") if info else "YouTube Video"
-    vid_dur = info.get("duration", None) if info else None
+    vid_dur = float(info.get("duration", 0.0) or 0.0) if info else None
 
     model_name = app_state.config.get("model_name", MODEL_NAME)
     include_cta = bool(app_state.config.get("include_cta", False))
@@ -5484,6 +5558,15 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
             )
             rotator.release(key)
             candidates = result.get("candidates", [])
+            if vid_dur and candidates:
+                _min_dur = MIN_STORY_DUR if req.mode == "story" else CLIP_DURATION
+                max_valid = max(0.0, float(vid_dur) - _min_dur)
+                valid = [c for c in candidates if 0.0 <= ts_to_seconds(c.get("start_time", "99:00:00")) <= max_valid]
+                if len(valid) < len(candidates):
+                    rescued = _reinterpret_mmss([c for c in candidates if c not in valid], vid_dur)
+                    valid = valid + rescued
+                candidates = valid if valid else candidates
+
             app_state.log(f"✅ Gemini analysis complete for: {vid_title} ({len(candidates)} highlights found)", "ok")
             return {
                 "status": "ok",
@@ -5516,6 +5599,18 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
     cookie_browser = app_state.config.get("youtube_cookie_browser", None)
     app_state.log(f"⚡ Downloading YouTube highlight [{req.start_time} - {req.end_time}]...", "info")
 
+    vid_dur = float(getattr(app_state, "yt_metadata", {}).get(url, {}).get("duration", 0.0) or 0.0)
+    if vid_dur <= 0:
+        try:
+            info = get_youtube_info(url, cookies_browser=cookie_browser)
+            if info:
+                if not hasattr(app_state, "yt_metadata"):
+                    app_state.yt_metadata = {}
+                app_state.yt_metadata[url] = info
+                vid_dur = float(info.get("duration", 0.0) or 0.0)
+        except Exception:
+            pass
+
     try:
         final_path = download_youtube_section(
             url=url,
@@ -5524,6 +5619,7 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
             output_path=str(output_path),
             cookies_browser=cookie_browser,
             log=lambda msg: app_state.log(msg, "info"),
+            vid_duration=vid_dur,
         )
     except Exception as e:
         app_state.log(f"Download section error: {e}", "error")
@@ -5587,7 +5683,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.1"
+        local_ver = "2.9.2"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

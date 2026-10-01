@@ -1,6 +1,6 @@
 {
-  "version": "2.9.1",
+  "version": "2.9.2",
   "release_date": "2026-10-01",
-  "changelog": "- Thanh tiến trình tải video thời gian thực cho từng clip highlight\n- Tải cùng lúc 3 luồng video YouTube song song (3x speed)\n- Tự động vượt lỗi cookie YouTube 'The page needs to be reloaded'\n- Tự động thử lại chống rớt mạng FFmpeg (code 3436169992)",
+  "changelog": "- Sửa triệt để lỗi TypeError: _log() missing argument khi cắt clip đơn hoặc chuyển tất cả cảnh\n- Tự động cứu và chuẩn hóa mốc thời gian (MM:SS:00 -> 00:MM:SS) chống lỗi FFmpeg code 3436169992\n- Sửa nút 'Chuyển tất cả cảnh vào Tab 2' tự động tải, thêm vào queue và chuyển thẳng qua Tab 2",
   "download_url": ""
 }

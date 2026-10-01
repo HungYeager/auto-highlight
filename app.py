@@ -34,7 +34,7 @@ from tkinter import (
 )
 import tkinter as tk
 from tkinter import ttk
-from typing import Optional
+from typing import Optional, Any, List, Dict, Tuple
 
 try:
     from PIL import Image, ImageTk
@@ -1303,7 +1303,8 @@ payoff can outperform a 2-minute chase on social media.
 
 For each candidate provide:
 1. Start Timestamp (HH:MM:SS) -- must be a real moment you observed in the video.
-   End Timestamp is always exactly 16 seconds after start.
+   IMPORTANT: For videos under 1 hour, start_time MUST begin with "00:" (e.g. 8 minutes 52 seconds is "00:08:52", NOT "08:52:00"). "08:52:00" means 8 hours 52 minutes and will crash the downloader!
+   End Timestamp is always exactly 16 seconds after start (e.g. "00:09:08").
 2. A brief explanation of why this moment is highly viral (mention the segment type).
 3. Exactly 5 viral English titles.
 
@@ -1395,8 +1396,8 @@ Prioritize scenes where the FULL ARC is visible within the {MIN_STORY_DUR}–{MA
 Do NOT pad with boring filler to reach minimum duration.
 
 For each candidate provide:
-1. start_time (HH:MM:SS) — scene opening, video-relative.
-2. end_time (HH:MM:SS) — natural scene close, video-relative.
+1. start_time (HH:MM:SS) — scene opening, video-relative (must start with "00:" for videos under 1 hr, e.g. "00:08:52").
+2. end_time (HH:MM:SS) — natural scene close, video-relative (e.g. "00:09:40").
 3. A brief explanation of why this scene is viral (mention arc type).
 4. Exactly 5 viral English titles.
 
@@ -1616,35 +1617,51 @@ def build_client(api_key: str):
 
 
 def _reinterpret_mmss(candidates: list, vid_dur: float) -> list:
-    """Rescue timestamps Gemini formatted as MM:SS:00 instead of HH:MM:SS.
+    """Rescue timestamps Gemini formatted as MM:SS:00 or MM:SS instead of HH:MM:SS.
 
-    For short videos (< 1 hour), Gemini sometimes writes '02:30:00' meaning
-    '2 minutes 30 seconds' (video-relative) but our parser reads it as
-    '2 hours 30 minutes'. If treating the HH field as minutes and MM field as
-    seconds yields a valid position, patch the candidate in-place.
+    For short videos (< 1 hour), Gemini sometimes writes '08:52:00' meaning
+    '8 minutes 52 seconds' (video-relative) but standard HH:MM:SS parsers read it as
+    '8 hours 52 minutes'. If treating the HH field as minutes and MM field as
+    seconds yields a valid position within vid_dur, patch the candidate in-place.
     Returns the list of successfully rescued candidates.
     """
     rescued = []
+    if not vid_dur or vid_dur <= 0:
+        return rescued
+
     for c in candidates:
-        parts = c.get("start_time", "").split(":")
-        if len(parts) != 3:
-            continue
-        try:
-            t_alt = int(parts[0]) * 60 + int(parts[1])  # treat HH:MM as MM:SS
-        except ValueError:
-            continue
-        if not (5.0 <= t_alt <= vid_dur - CLIP_DURATION):
-            continue
-        h  = t_alt // 3600
-        m  = (t_alt % 3600) // 60
-        s  = t_alt % 60
-        end = t_alt + CLIP_DURATION
-        eh = end // 3600
-        em = (end % 3600) // 60
-        es = end % 60
-        c["start_time"] = f"{h:02d}:{m:02d}:{s:02d}"
-        c["end_time"]   = f"{eh:02d}:{em:02d}:{es:02d}"
-        rescued.append(c)
+        raw_start = str(c.get("start_time", "")).strip()
+        parts = raw_start.split(":")
+        dur = float(c.get("clip_duration") or CLIP_DURATION)
+        max_valid = max(0.0, vid_dur - dur)
+
+        t_alt = None
+        if len(parts) == 3:
+            try:
+                # E.g. "08:52:00" -> 8 minutes 52 seconds
+                t_alt = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+            except (ValueError, IndexError):
+                continue
+        elif len(parts) == 2:
+            try:
+                # E.g. "08:52" -> 8 minutes 52 seconds
+                t_alt = int(parts[0]) * 60 + float(parts[1])
+            except (ValueError, IndexError):
+                continue
+
+        if t_alt is not None and (0.0 <= t_alt <= max_valid or (t_alt <= vid_dur)):
+            t_final = min(t_alt, max_valid)
+            h = int(t_final // 3600)
+            m = int((t_final % 3600) // 60)
+            s = int(t_final % 60)
+            end = min(vid_dur, t_final + dur)
+            eh = int(end // 3600)
+            em = int((end % 3600) // 60)
+            es = int(end % 60)
+            c["start_time"] = f"{h:02d}:{m:02d}:{s:02d}"
+            c["end_time"]   = f"{eh:02d}:{em:02d}:{es:02d}"
+            c["clip_duration"] = dur
+            rescued.append(c)
     return rescued
 
 
@@ -2089,12 +2106,16 @@ def analyze_video(client, sdk: str, remote, video_name: str,
         snippet = (raw[:400] if raw else "None")
         raise ValueError(f"No candidates in response:\n{snippet}")
     # Strip preamble labels Gemini sometimes adds inside title strings
-    for cand in parsed.get("candidates", []):
+    for idx, cand in enumerate(parsed.get("candidates", [])):
         if "suggested_titles" in cand:
             cand["suggested_titles"] = [
                 _clean_title_str(t) for t in cand["suggested_titles"] if t
             ]
             cand["suggested_titles"] = [t for t in cand["suggested_titles"] if t]
+
+        # Ensure candidate has a default title
+        if not cand.get("title") and cand.get("suggested_titles"):
+            cand["title"] = cand["suggested_titles"][0]
 
         # Tính clip_duration cho từng candidate từ end_time - start_time (Story Mode)
         # Short Mode: fallback về CLIP_DURATION (16s)
@@ -2103,13 +2124,50 @@ def analyze_video(client, sdk: str, remote, video_name: str,
                 end_sec   = ts_to_seconds(cand["end_time"])
                 start_sec = ts_to_seconds(cand["start_time"])
                 dur_calc  = end_sec - start_sec
-                # Clamp về [MIN_STORY_DUR, MAX_STORY_DUR]; fallback về midpoint nếu lỗi
                 cand["clip_duration"] = int(max(MIN_STORY_DUR, min(MAX_STORY_DUR, dur_calc))) \
                     if dur_calc > 0 else (MIN_STORY_DUR + MAX_STORY_DUR) // 2
             except Exception:
                 cand["clip_duration"] = (MIN_STORY_DUR + MAX_STORY_DUR) // 2
         else:
             cand.setdefault("clip_duration", CLIP_DURATION)
+
+        # Normalize start_time and end_time into standard HH:MM:SS
+        dur = float(cand.get("clip_duration") or CLIP_DURATION)
+        raw_start = str(cand.get("start_time", "00:00:00")).strip()
+        parts = raw_start.split(":")
+        start_sec = ts_to_seconds(raw_start)
+
+        # Timestamp self-healing: if Gemini outputs MM:SS:00 (e.g. 08:52:00 instead of 00:08:52)
+        if vid_duration and vid_duration > 0:
+            if start_sec > vid_duration:
+                if len(parts) == 3:
+                    try:
+                        alt_sec = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+                        if alt_sec <= vid_duration:
+                            start_sec = alt_sec
+                    except (ValueError, IndexError):
+                        pass
+                elif len(parts) == 2:
+                    try:
+                        alt_sec = int(parts[0]) * 60 + float(parts[1])
+                        if alt_sec <= vid_duration:
+                            start_sec = alt_sec
+                    except (ValueError, IndexError):
+                        pass
+            start_sec = max(0.0, min(start_sec, max(0.0, vid_duration - dur)))
+
+        h = int(start_sec // 3600)
+        m = int((start_sec % 3600) // 60)
+        s = int(start_sec % 60)
+        cand["start_time"] = f"{h:02d}:{m:02d}:{s:02d}"
+
+        end_sec = start_sec + dur
+        if vid_duration and vid_duration > 0:
+            end_sec = min(vid_duration, end_sec)
+        eh = int(end_sec // 3600)
+        em = int((end_sec % 3600) // 60)
+        es = int(end_sec % 60)
+        cand["end_time"] = f"{eh:02d}:{em:02d}:{es:02d}"
 
     return parsed
 
@@ -2221,19 +2279,66 @@ def download_youtube_section(
     cookies_browser: Optional[str] = None,
     cookie_file: Optional[str] = None,
     log: Optional[Any] = None,
+    vid_duration: Optional[float] = None,
 ) -> str:
     """Download only a specific time-slice of a YouTube video using HTTP range requests."""
     import yt_dlp
     import shutil
+
+    def _safe_log(msg: str, level: str = "info"):
+        if not log:
+            return
+        if callable(log):
+            try:
+                log(msg)
+            except TypeError:
+                try:
+                    log(level, msg)
+                except Exception:
+                    pass
+        elif hasattr(log, level) and callable(getattr(log, level)):
+            try:
+                getattr(log, level)(msg)
+            except Exception:
+                pass
 
     start_s = float(ts_to_seconds(start_time))
     end_s = float(ts_to_seconds(end_time))
     if end_s <= start_s:
         end_s = start_s + float(CLIP_DURATION)
 
+    # Timestamp self-healing: Check if timestamp was formatted as MM:SS:00 (e.g. 08:52:00 meant 8m52s)
+    parts = start_time.strip().split(":")
+    if len(parts) == 3 and start_s > 3600:
+        try:
+            alt_s = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+            if vid_duration and start_s > vid_duration and alt_s <= vid_duration:
+                dur = end_s - start_s
+                start_s = alt_s
+                end_s = start_s + dur
+                _safe_log(f"⚡ Timestamp self-healing: {start_time} -> {int(start_s//60):02d}:{int(start_s%60):02d}", "info")
+            elif not vid_duration and int(parts[0]) < 60 and int(parts[1]) < 60 and start_s > 7200:
+                # Video duration unknown, but start_s is 2+ hours and parts look like MM:SS:00
+                try:
+                    meta = get_youtube_info(url, cookies_browser=cookies_browser, cookie_file=cookie_file)
+                    v_dur = meta.get("duration")
+                    if v_dur and start_s > v_dur and alt_s <= v_dur:
+                        dur = end_s - start_s
+                        start_s = alt_s
+                        end_s = start_s + dur
+                        vid_duration = float(v_dur)
+                        _safe_log(f"⚡ Timestamp self-healing: {start_time} -> {int(start_s//60):02d}:{int(start_s%60):02d}", "info")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # Buffer 0.5s before/after so keyframes slice cleanly
     req_start = max(0.0, start_s - 0.5)
     req_end = end_s + 0.5
+    if vid_duration and vid_duration > 0:
+        req_start = min(req_start, max(0.0, vid_duration - 1.0))
+        req_end = min(vid_duration, max(req_start + 1.0, req_end))
 
     out_p = Path(output_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -2243,8 +2348,7 @@ def download_youtube_section(
         except Exception:
             pass
 
-    if log:
-        log(f"⚡ Downloading YouTube section [{start_time} - {end_time}] to {out_p.name}...")
+    _safe_log(f"⚡ Downloading YouTube section [{start_time} - {end_time}] to {out_p.name}...")
 
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -2255,6 +2359,7 @@ def download_youtube_section(
         'no_warnings': True,
         'retries': 5,
         'fragment_retries': 5,
+        'source_address': '0.0.0.0',  # Force IPv4 against Windows IPv6 connection reset drops
     }
 
     try:
@@ -2301,8 +2406,7 @@ def download_youtube_section(
         # Nếu cookie bị lỗi hoặc session cookie hỏng (ví dụ: "The page needs to be reloaded", "Requested format not available",...)
         # -> Tự động thử lại ngay mà không dùng cookie
         if 'cookiefile' in ydl_opts or 'cookiesfrombrowser' in ydl_opts:
-            if log:
-                log("⚠️ Cookie YouTube bị lỗi hoặc hết hạn, đang tự động thử lại không dùng cookie...")
+            _safe_log("⚠️ Cookie YouTube bị lỗi hoặc hết hạn, đang tự động thử lại không dùng cookie...")
             ydl_opts_no_cookie = dict(ydl_opts)
             ydl_opts_no_cookie.pop('cookiefile', None)
             ydl_opts_no_cookie.pop('cookiesfrombrowser', None)

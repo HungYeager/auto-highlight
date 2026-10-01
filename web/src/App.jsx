@@ -3218,7 +3218,15 @@ const addFiles = async () => {
             return Array.from(newMap.values());
           });
         }
-        alert(`⚡ Đã chuyển thành công ${d.added_count || cands.length} cảnh vào Tab 2 (với Title #1)!`);
+        if (d.added_count > 0) {
+          setTimeout(() => {
+            setSelEditIdx(0);
+            setTab('edit');
+          }, 50);
+          alert(`⚡ Đã chuyển thành công ${d.added_count} cảnh vào Tab 2 (với Title #1)!`);
+        } else {
+          alert('Không có cảnh nào được thêm vào Tab 2. Vui lòng kiểm tra lại log hoặc kết nối.');
+        }
       } else {
         alert(d.detail || 'Không thể chuyển tất cả cảnh vào Tab 2');
       }
