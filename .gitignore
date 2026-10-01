@@ -43,6 +43,7 @@ ProPainter/weights/*.pth
 
 # ── Build Artifacts & Large Binaries (>100MB blocked by GitHub) ──
 /dist/
+/dist_launcher/
 /build/
 *.spec.bak
 *.exe
