@@ -87,9 +87,23 @@ def find_engine_exe(app_dir: str) -> str:
     return ""
 
 
-def kill_running_engine():
-    """Tắt tiến trình Engine cũ đang chạy và giải phóng cổng 8000 mà KHÔNG tắt Launcher hiện tại."""
-    current_pid = os.getpid()
+def log(msg: str):
+    """Ghi log vào file launcher.log trong thư mục cài đặt để dễ chẩn đoán khi có sự cố."""
+    try:
+        log_file = os.path.join(get_install_dir(), "launcher.log")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+def kill_running_engine(install_dir: str = ""):
+    """Chỉ tắt tiến trình Engine cũ đang chạy từ thư mục app (hoặc tiến trình đang chiếm port 8000).
+    Tuyệt đối không bao giờ tắt Launcher hiện tại."""
+    if not install_dir:
+        install_dir = get_install_dir()
+    app_dir = os.path.join(install_dir, "app").replace("/", "\\").lower()
+    log(f"kill_running_engine invoked for app_dir: {app_dir}")
 
     # 1. Tắt tiến trình đang chiếm cổng 8000 (nếu có)
     try:
@@ -101,35 +115,26 @@ def kill_running_engine():
                     capture_output=True,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Port 8000 cleanup error: {e}")
 
-    # 2. Tìm và tắt các tiến trình OpenCutStudio.exe khác (ngoại trừ chính Launcher hiện tại)
+    # 2. Chỉ tắt các tiến trình OpenCutStudio.exe có ExecutablePath nằm trong app_dir
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq OpenCutStudio.exe", "/FO", "CSV", "/NH"],
+        ps_cmd = f"Get-CimInstance Win32_Process -Filter \"Name = 'OpenCutStudio.exe'\" | Where-Object {{ $_.ExecutablePath -like '*{app_dir}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+        subprocess.run(
+            ["powershell", "-Command", ps_cmd],
             capture_output=True,
-            text=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        ).stdout
-        for line in out.strip().splitlines():
-            parts = [p.strip(' "') for p in line.split(",")]
-            if len(parts) >= 2 and parts[1].isdigit():
-                pid = int(parts[1])
-                if pid != current_pid:
-                    subprocess.run(
-                        ["taskkill", "/F", "/PID", str(pid), "/T"],
-                        capture_output=True,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    )
-    except Exception:
-        pass
+        )
+    except Exception as e:
+        log(f"Engine process cleanup error: {e}")
 
-    # 3. Tắt các tiến trình phụ thuộc (ffmpeg.exe, ffprobe.exe)
+    # 3. Tắt các tiến trình ffmpeg.exe trong app_dir nếu có
     for proc_name in ["ffmpeg.exe", "ffprobe.exe"]:
         try:
+            ps_cmd = f"Get-CimInstance Win32_Process -Filter \"Name = '{proc_name}'\" | Where-Object {{ $_.ExecutablePath -like '*{app_dir}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
             subprocess.run(
-                ["taskkill", "/F", "/IM", proc_name],
+                ["powershell", "-Command", ps_cmd],
                 capture_output=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
@@ -230,6 +235,13 @@ class LauncherApp(tk.Tk):
                 self.progress["value"] = pct
         self.after(0, _update)
 
+    def show_error(self, title: str, message: str):
+        log(f"SHOW_ERROR [{title}]: {message}")
+        def _show():
+            messagebox.showerror(title, message)
+            self.quit()
+        self.after(0, _show)
+
     def get_local_version(self) -> str:
         # 1. Đọc từ version.txt trong thư mục install
         if os.path.exists(self.version_file):
@@ -308,13 +320,25 @@ class LauncherApp(tk.Tk):
             return None
 
     def bootstrap_thread(self):
+        try:
+            self._run_bootstrap()
+        except Exception as e:
+            import traceback
+            err_details = traceback.format_exc()
+            log(f"CRITICAL EXCEPTION in bootstrap_thread:\n{err_details}")
+            self.show_error("Lỗi Khởi Động", f"Đã xảy ra sự cố ngoài dự tính:\n{e}\n\nVui lòng xem file launcher.log")
+
+    def _run_bootstrap(self):
+        log("=== Launcher bootstrap started ===")
         time.sleep(0.3)
         engine_exe = find_engine_exe(self.install_dir)
         has_engine = bool(engine_exe and os.path.exists(engine_exe))
         local_ver = self.get_local_version()
+        log(f"Current state: local_ver={local_ver}, has_engine={has_engine}, engine_exe={engine_exe}")
 
         self.set_status("Đang kiểm tra bản phát hành trên GitHub...", 10)
         release_info = self.fetch_latest_release()
+        log(f"Release check result: tag={release_info.get('tag_name') if release_info else 'None'}")
 
         need_download = False
         target_asset = None
@@ -323,7 +347,6 @@ class LauncherApp(tk.Tk):
         if release_info:
             remote_tag = release_info.get("tag_name", "").lstrip("vV")
             assets = release_info.get("assets", [])
-            # Tìm asset zip (ưu tiên file zip chứa OpenCut hoặc Core)
             for a in assets:
                 name = a.get("name", "").lower()
                 if name.endswith(".zip"):
@@ -335,16 +358,17 @@ class LauncherApp(tk.Tk):
             elif target_asset and parse_semver(remote_tag) > parse_semver(local_ver):
                 need_download = True
 
+        log(f"Evaluation: need_download={need_download}, remote_tag={remote_tag}")
+
         # Nếu chưa có Engine mà không thể kết nối GitHub
         if not has_engine and (not release_info or not target_asset):
             self.set_status("Lỗi: Không tìm thấy gói Engine trên GitHub.", 0)
-            messagebox.showerror(
+            self.show_error(
                 "Chưa có bản phát hành",
                 "Chưa tìm thấy gói cài đặt Engine trên GitHub Releases.\n\n"
                 f"Vui lòng tạo Release trên GitHub: {self.github_repo}/releases "
                 "và đính kèm file zip đóng gói của Studio."
             )
-            self.quit()
             return
 
         # Tải Engine đóng gói hoặc Cập nhật
@@ -352,6 +376,7 @@ class LauncherApp(tk.Tk):
             download_url = target_asset.get("browser_download_url")
             asset_size = target_asset.get("size", 0)
             asset_name = target_asset.get("name", "Engine.zip")
+            log(f"Starting download/extract of {asset_name} ({asset_size} bytes)")
 
             if has_engine and parse_semver(remote_tag) > parse_semver(local_ver):
                 self.set_status(f"Phát hiện bản mới v{remote_tag}! Đang tải gói cập nhật...", 15)
@@ -361,22 +386,22 @@ class LauncherApp(tk.Tk):
                 self.after(0, lambda: self.footer_lbl.config(text=f"Cài đặt mới: v{remote_tag}"))
 
             success = self.download_and_extract_engine(download_url, asset_size, remote_tag)
+            log(f"download_and_extract_engine result: {success}")
             if not success:
                 self.set_status(f"Lỗi: Không thể hoàn tất cài đặt bản v{remote_tag}", 0)
-                messagebox.showerror(
+                self.show_error(
                     "Lỗi cài đặt",
                     f"Quá trình tải hoặc giải nén bản v{remote_tag} thất bại.\n\n"
                     "Vui lòng tắt các tiến trình OpenCutStudio đang chạy và thử lại."
                 )
-                self.quit()
                 return
 
         # Tìm lại engine_exe sau khi giải nén
         engine_exe = find_engine_exe(self.install_dir)
+        log(f"Final engine_exe check: {engine_exe}")
         if not engine_exe or not os.path.exists(engine_exe):
             self.set_status("Không tìm thấy file OpenCutStudio.exe sau khi giải nén.", 0)
-            messagebox.showerror("Lỗi cài đặt", "Không tìm thấy file OpenCutStudio.exe trong gói giải nén.")
-            self.quit()
+            self.show_error("Lỗi cài đặt", "Không tìm thấy file OpenCutStudio.exe trong gói giải nén.")
             return
 
         # Khởi chạy Engine
@@ -491,18 +516,21 @@ class LauncherApp(tk.Tk):
                                         mb = downloaded / (1024 * 1024)
                                         self.set_status(f"Đang tải: {mb:.1f}MB...", 50)
             except Exception as e:
-                print(f"[Launcher] Download error: {e}")
+                log(f"Download error: {e}")
                 return False
 
-        # 4. Đóng mọi tiến trình OpenCutStudio cũ đang chạy (trừ chính Launcher hiện tại)
-        kill_running_engine()
+        # 4. Đóng mọi tiến trình OpenCutStudio cũ đang chạy trong app_dir
+        log("Calling kill_running_engine before extraction...")
+        kill_running_engine(self.install_dir)
 
         # 5. Giải nén Engine vào thư mục app
         self.set_status(f"Đang chuẩn bị giải nén bộ Engine v{tag_version}...", 86)
         app_dir = os.path.join(self.install_dir, "app")
         os.makedirs(app_dir, exist_ok=True)
 
+        extracted_ok = False
         try:
+            log(f"Opening zip file for extract: {target_zip_to_extract}")
             with zipfile.ZipFile(target_zip_to_extract, "r") as zf:
                 infolist = [m for m in zf.infolist() if not m.filename.endswith("/")]
                 total_files = max(1, len(infolist))
@@ -511,6 +539,7 @@ class LauncherApp(tk.Tk):
                 if len(parts) > 1 and parts[0] and all(n.startswith(parts[0] + "/") for n in zf.namelist() if n.strip()):
                     prefix = parts[0] + "/"
 
+                log(f"Extracting {total_files} files (prefix='{prefix}')...")
                 for idx, member in enumerate(infolist):
                     rel = member.filename
                     if prefix and rel.startswith(prefix):
@@ -528,7 +557,7 @@ class LauncherApp(tk.Tk):
                     os.makedirs(os.path.dirname(target), exist_ok=True)
 
                     written = False
-                    for _ in range(3):
+                    for attempt in range(3):
                         try:
                             with zf.open(member) as src, open(target, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
@@ -546,23 +575,27 @@ class LauncherApp(tk.Tk):
             self.set_local_version(tag_version)
             self.set_status(f"Cài đặt hoàn tất! Đang khởi động v{tag_version}...", 98)
             self.after(0, lambda: self.footer_lbl.config(text=f"v{tag_version}"))
+            extracted_ok = True
+            log("Engine extraction completed successfully.")
             return True
         except Exception as e:
-            print(f"[Launcher] Extract error: {e}")
+            log(f"Extract error: {e}")
             return False
         finally:
-            if not local_zip and os.path.exists(zip_path):
+            if extracted_ok and not local_zip and os.path.exists(zip_path):
                 try:
                     os.remove(zip_path)
-                except Exception:
-                    pass
+                    log(f"Cleaned up temporary zip: {zip_path}")
+                except Exception as e:
+                    log(f"Could not remove temp zip: {e}")
 
     def launch_engine(self, engine_exe: str):
         """Khởi động file OpenCutStudio.exe (Engine độc lập mã máy)."""
         engine_dir = os.path.dirname(engine_exe)
+        log(f"launch_engine starting: {engine_exe} in {engine_dir}")
 
         # Dọn sạch cổng 8000 và tiến trình cũ
-        kill_running_engine()
+        kill_running_engine(self.install_dir)
 
         try:
             # Khởi chạy engine_exe trong thư mục của nó
@@ -571,9 +604,10 @@ class LauncherApp(tk.Tk):
                 cwd=engine_dir,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
+            log("Engine process spawned successfully.")
         except Exception as e:
-            messagebox.showerror("Lỗi khởi động Engine", f"Không thể bật engine: {e}")
-            self.quit()
+            log(f"Error spawning engine: {e}")
+            self.show_error("Lỗi khởi động Engine", f"Không thể bật engine: {e}")
             return
 
         # Chờ port 8000 sẵn sàng (tối đa 35 giây)
@@ -591,22 +625,29 @@ class LauncherApp(tk.Tk):
                 pass
             time.sleep(0.8)
 
+        log(f"Port 8000 readiness: {ready} (waited {time.time() - start_wait:.1f}s)")
+
         # Mở Edge/Chrome ở dạng cửa sổ Desktop app
         self.set_status("Đang mở giao diện Studio...", 100)
         time.sleep(0.5)
 
         url = "http://127.0.0.1:8000"
+        opened = False
         try:
             subprocess.Popen(["msedge.exe", f"--app={url}", "--window-size=1440,900"],
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            opened = True
         except Exception:
             try:
                 subprocess.Popen(["chrome.exe", f"--app={url}", "--window-size=1440,900"],
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                opened = True
             except Exception:
                 import webbrowser
                 webbrowser.open(url)
+                opened = True
 
+        log(f"Browser launched: {opened}")
         time.sleep(2.0)
         self.destroy()
 
