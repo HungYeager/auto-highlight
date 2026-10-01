@@ -1,6 +1,6 @@
 {
-  "version": "2.8.6",
+  "version": "2.9.1",
   "release_date": "2026-10-01",
-  "changelog": "- Tự động nhập batch link YouTube phân tích song song\n- 1-Click dán Cookie YouTube trực tiếp từ Clipboard\n- Tích hợp tính năng Auto-Update khởi động cùng ứng dụng",
+  "changelog": "- Thanh tiến trình tải video thời gian thực cho từng clip highlight\n- Tải cùng lúc 3 luồng video YouTube song song (3x speed)\n- Tự động vượt lỗi cookie YouTube 'The page needs to be reloaded'\n- Tự động thử lại chống rớt mạng FFmpeg (code 3436169992)",
   "download_url": ""
 }

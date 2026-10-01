@@ -7,7 +7,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $APP_NAME  = "OpenCutStudio"
-$VERSION   = "2.8.6"
+$VERSION   = "2.9.1"
+if (Test-Path "version.json") {
+    try {
+        $vJson = Get-Content "version.json" -Raw | ConvertFrom-Json
+        if ($vJson.version) { $VERSION = $vJson.version.Trim() }
+    } catch {}
+}
 $SPEC_FILE = "OpenCutStudio.spec"
 $PYTHON    = ".venv\Scripts\python.exe"
 $RELEASE   = "dist\${APP_NAME}_v${VERSION}"
@@ -159,6 +165,11 @@ if ($ffplayPath -and (Test-Path $ffplayPath)) {
 # Copy sanitized template config.json
 $cleanJson | Set-Content "$RELEASE\config.json" -Encoding UTF8
 Write-Host "  + config.json (clean template)"
+
+if (Test-Path "version.json") {
+    Copy-Item "version.json" "$RELEASE\version.json" -Force
+    Write-Host "  + version.json"
+}
 
 # Copy fonts directory
 if (Test-Path "fonts") {

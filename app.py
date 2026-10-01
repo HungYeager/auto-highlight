@@ -2187,12 +2187,30 @@ def get_youtube_info(url: str, cookies_browser: Optional[str] = None, cookie_fil
             }
     except Exception as e:
         err_msg = str(e)
+        if 'cookiefile' in ydl_opts or 'cookiesfrombrowser' in ydl_opts:
+            ydl_opts_no_cookie = dict(ydl_opts)
+            ydl_opts_no_cookie.pop('cookiefile', None)
+            ydl_opts_no_cookie.pop('cookiesfrombrowser', None)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_no_cookie) as ydl_retry:
+                    info = ydl_retry.extract_info(url, download=False)
+                    return {
+                        "title": info.get("title", ""),
+                        "duration": float(info.get("duration", 0) or 0),
+                        "thumbnail": info.get("thumbnail", ""),
+                        "uploader": info.get("uploader", ""),
+                        "view_count": info.get("view_count", 0),
+                        "url": url,
+                    }
+            except Exception as e_retry:
+                err_msg = str(e_retry)
+
         if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
             raise RuntimeError(
                 "YouTube yêu cầu xác minh bot hoặc đăng nhập tài khoản (Sign in to confirm you're not a bot). "
                 "Vui lòng nạp file cookies.txt vào Studio để xử lý video này!"
             ) from e
-        raise
+        raise RuntimeError(err_msg) from e
 
 
 def download_youtube_section(
@@ -2235,7 +2253,15 @@ def download_youtube_section(
         'outtmpl': str(out_p),
         'quiet': True,
         'no_warnings': True,
+        'retries': 5,
+        'fragment_retries': 5,
     }
+
+    try:
+        if FFMPEG and Path(FFMPEG).exists():
+            ydl_opts['ffmpeg_location'] = str(Path(FFMPEG).resolve())
+    except Exception:
+        pass
 
     c_file = cookie_file or get_yt_cookie_file()
     if c_file:
@@ -2252,17 +2278,47 @@ def download_youtube_section(
         except Exception:
             pass
 
+    def _safe_run_download(opts_dict: dict, max_tries: int = 2) -> bool:
+        last_e = None
+        for attempt in range(max_tries):
+            try:
+                with yt_dlp.YoutubeDL(opts_dict) as ydl_inst:
+                    ydl_inst.download([url])
+                if out_p.exists() and out_p.stat().st_size > 1024:
+                    return True
+            except Exception as ex:
+                last_e = ex
+                if attempt < max_tries - 1:
+                    time.sleep(1.5)
+        if last_e:
+            raise last_e
+        return False
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        _safe_run_download(ydl_opts, max_tries=2)
     except Exception as e:
         err_msg = str(e)
+        # Nếu cookie bị lỗi hoặc session cookie hỏng (ví dụ: "The page needs to be reloaded", "Requested format not available",...)
+        # -> Tự động thử lại ngay mà không dùng cookie
+        if 'cookiefile' in ydl_opts or 'cookiesfrombrowser' in ydl_opts:
+            if log:
+                log("⚠️ Cookie YouTube bị lỗi hoặc hết hạn, đang tự động thử lại không dùng cookie...")
+            ydl_opts_no_cookie = dict(ydl_opts)
+            ydl_opts_no_cookie.pop('cookiefile', None)
+            ydl_opts_no_cookie.pop('cookiesfrombrowser', None)
+            try:
+                _safe_run_download(ydl_opts_no_cookie, max_tries=2)
+                if out_p.exists() and out_p.stat().st_size > 1024:
+                    return str(out_p.resolve())
+            except Exception as e_retry:
+                err_msg = str(e_retry)
+
         if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
             raise RuntimeError(
                 "YouTube yêu cầu xác minh tài khoản (Sign in to confirm you're not a bot). "
-                "Vui lòng nạp file cookies.txt vào Studio để tải video này!"
+                "Vui lòng nạp lại file cookies.txt mới từ trình duyệt để tải video này!"
             ) from e
-        raise
+        raise RuntimeError(err_msg) from e
 
     if not out_p.exists():
         raise RuntimeError(f"Failed to download YouTube section: {url}")

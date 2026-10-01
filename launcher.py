@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-OpenCut Studio - Smart Bootstrapper Launcher
-=============================================
-A lightweight, modern standalone launcher (~10MB) for OpenCut Bodycam Studio.
-Checks for updates from GitHub Releases, downloads updates with a progress bar,
-preserves user configurations, and launches the Web Studio automatically.
+OpenCut Studio - Smart Bootstrapper Launcher (Engine Release Downloader)
+=======================================================================
+A standalone launcher (~11MB) for end users.
+Downloads the packaged standalone engine from GitHub Releases on first launch,
+automatically checks for updates, and launches the desktop studio without
+requiring Python, Git, or any dependencies on the client machine.
 """
 
 import os
@@ -21,64 +22,25 @@ import urllib.error
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
 APP_NAME = "OpenCut Bodycam Studio"
-DEFAULT_GITHUB_REPO = "https://github.com/hunghoang/auto-highlight"
+DEFAULT_GITHUB_REPO = "https://github.com/HungYeager/auto-highlight"
 TIMEOUT_CHECK = 3
 
-# File & Thư mục được bảo vệ, tuyệt đối không ghi đè khi cập nhật
-PROTECTED_ITEMS = {
-    "config.json",
-    "cookies.txt",
-    "session_data.json",
-    ".venv",
-    ".git",
-    "output_clips",
-    "temp_uploads",
-    "raw_cuts",
-    "test_out"
-}
 
-
-def get_base_dir() -> str:
-    """Xác định thư mục cài đặt app.
-    Nếu chạy cùng thư mục với server.py -> Portable mode.
-    Nếu là file exe độc lập của khách -> %LOCALAPPDATA%\\OpenCutStudio.
-    """
-    exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    if os.path.exists(os.path.join(exe_dir, "server.py")):
-        return exe_dir
+def get_install_dir() -> str:
+    """Thư mục cài đặt cố định trên máy khách: %LOCALAPPDATA%\\OpenCutStudio."""
     local_app_data = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
     target = os.path.join(local_app_data, "OpenCutStudio")
     os.makedirs(target, exist_ok=True)
     return target
 
 
-def parse_semver(v_str: str):
-    try:
-        clean = str(v_str).strip().lstrip("vV")
-        return tuple(int(x) for x in clean.split(".") if x.isdigit())
-    except Exception:
-        return (0, 0, 0)
-
-
-def get_local_version(app_dir: str) -> str:
-    v_file = os.path.join(app_dir, "version.json")
-    if os.path.exists(v_file):
-        try:
-            with open(v_file, "r", encoding="utf-8") as f:
-                return json.load(f).get("version", "1.0.0")
-        except Exception:
-            pass
-    return "0.0.0"
-
-
-def get_repo_url(app_dir: str) -> str:
-    # 1. Tìm trong _MEIPASS (khi đóng gói vào file .exe độc lập)
+def get_repo_url(install_dir: str) -> str:
+    """Lấy link GitHub repository từ file cấu hình nhúng hoặc file cục bộ."""
     meipass = getattr(sys, "_MEIPASS", "")
     candidates = [
         os.path.join(meipass, "updater_config.json") if meipass else "",
-        os.path.join(app_dir, "updater_config.json"),
+        os.path.join(install_dir, "updater_config.json"),
         os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "updater_config.json")
     ]
     for cfg_file in candidates:
@@ -93,26 +55,55 @@ def get_repo_url(app_dir: str) -> str:
     return DEFAULT_GITHUB_REPO
 
 
+def parse_semver(v_str: str):
+    try:
+        clean = str(v_str).strip().lstrip("vV")
+        return tuple(int(x) for x in clean.split(".") if x.isdigit())
+    except Exception:
+        return (0, 0, 0)
+
+
+def find_engine_exe(app_dir: str) -> str:
+    """Tìm file OpenCutStudio.exe (Engine đóng gói) trong thư mục app."""
+    # 1. Kiểm tra trực tiếp trong app_dir/app/OpenCutStudio.exe
+    primary = os.path.join(app_dir, "app", "OpenCutStudio.exe")
+    if os.path.exists(primary):
+        return primary
+
+    # 2. Kiểm tra trực tiếp trong app_dir/OpenCutStudio.exe (nếu không dùng thư mục con)
+    # Lưu ý: Không trỏ nhầm vào chính file launcher hiện tại sys.argv[0]!
+    current_launcher = os.path.abspath(sys.argv[0])
+    direct = os.path.join(app_dir, "OpenCutStudio.exe")
+    if os.path.exists(direct) and os.path.abspath(direct).lower() != current_launcher.lower():
+        return direct
+
+    # 3. Quét đệ quy tìm file OpenCutStudio.exe trong app_dir
+    for root, _, files in os.walk(os.path.join(app_dir, "app")):
+        for f in files:
+            if f.lower() == "opencutstudio.exe":
+                found = os.path.join(root, f)
+                if os.path.abspath(found).lower() != current_launcher.lower():
+                    return found
+    return ""
+
+
 class LauncherApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.app_dir = get_base_dir()
-        self.local_version = get_local_version(self.app_dir)
-        self.github_repo = get_repo_url(self.app_dir)
+        self.install_dir = get_install_dir()
+        self.github_repo = get_repo_url(self.install_dir)
+        self.version_file = os.path.join(self.install_dir, "version.txt")
 
-        # Cấu hình cửa sổ
+        # Cấu hình cửa sổ Launcher
         self.title(APP_NAME)
-        self.geometry("420x220")
+        self.geometry("440x230")
         self.resizable(False, False)
         self.configure(bg="#0c0d16")
 
-        # Căn giữa màn hình
-        self.center_window(420, 220)
-
-        # Giao diện Dark theme hiện đại
+        self.center_window(440, 230)
         self.setup_ui()
 
-        # Bắt đầu luồng kiểm tra & khởi động ngầm
+        # Bắt đầu luồng xử lý
         threading.Thread(target=self.bootstrap_thread, daemon=True).start()
 
     def center_window(self, w, h):
@@ -126,14 +117,13 @@ class LauncherApp(tk.Tk):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure(
-            "Cyan.Horizontal.TProgressbar",
+            "Indigo.Horizontal.TProgressbar",
             troughcolor="#16192b",
             background="#6366f1",
-            thickness=6,
+            thickness=8,
             borderwidth=0
         )
 
-        # Header Title
         title_lbl = tk.Label(
             self,
             text=APP_NAME,
@@ -145,35 +135,33 @@ class LauncherApp(tk.Tk):
 
         sub_lbl = tk.Label(
             self,
-            text="AI-Powered Video Highlight & Subtitle Studio",
+            text="Standalone AI Video Clipper & Subtitle Engine",
             font=("Segoe UI", 8),
             fg="#94a3b8",
             bg="#0c0d16"
         )
         sub_lbl.pack()
 
-        # Status text
         self.status_lbl = tk.Label(
             self,
-            text="Đang kiểm tra kết nối...",
+            text="Đang kết nối hệ thống...",
             font=("Segoe UI", 9),
             fg="#cbd5e1",
             bg="#0c0d16"
         )
-        self.status_lbl.pack(pady=(28, 8))
+        self.status_lbl.pack(pady=(25, 8))
 
-        # Progress bar
         self.progress = ttk.Progressbar(
             self,
-            style="Cyan.Horizontal.TProgressbar",
+            style="Indigo.Horizontal.TProgressbar",
             orient="horizontal",
-            length=350,
+            length=370,
             mode="determinate"
         )
         self.progress.pack(pady=4)
 
-        # Footer info (Version)
-        ver_text = f"v{self.local_version}" if self.local_version != "0.0.0" else "Cài đặt lần đầu"
+        local_ver = self.get_local_version()
+        ver_text = f"v{local_ver}" if local_ver != "0.0.0" else "Khởi tạo lần đầu"
         self.footer_lbl = tk.Label(
             self,
             text=ver_text,
@@ -190,79 +178,115 @@ class LauncherApp(tk.Tk):
                 self.progress["value"] = pct
         self.after(0, _update)
 
+    def get_local_version(self) -> str:
+        if os.path.exists(self.version_file):
+            try:
+                with open(self.version_file, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except Exception:
+                pass
+        return "0.0.0"
+
+    def set_local_version(self, v_str: str):
+        try:
+            with open(self.version_file, "w", encoding="utf-8") as f:
+                f.write(v_str.strip())
+        except Exception:
+            pass
+
+    def fetch_latest_release(self):
+        """Lấy thông tin Release mới nhất từ GitHub API."""
+        try:
+            repo_clean = self.github_repo.replace("https://github.com/", "").replace("http://github.com/", "").rstrip("/")
+            api_url = f"https://api.github.com/repos/{repo_clean}/releases/latest"
+            req = urllib.request.Request(
+                api_url,
+                headers={
+                    "User-Agent": "OpenCutLauncher/2.0",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"[Launcher] Release check error: {e}")
+            return None
+
     def bootstrap_thread(self):
         time.sleep(0.3)
-        has_server = os.path.exists(os.path.join(self.app_dir, "server.py"))
+        engine_exe = find_engine_exe(self.install_dir)
+        has_engine = bool(engine_exe and os.path.exists(engine_exe))
+        local_ver = self.get_local_version()
 
-        # 1. Kiểm tra cập nhật từ GitHub
-        remote_data = None
-        if "YOUR_USERNAME" not in self.github_repo:
-            self.set_status("Đang kiểm tra bản cập nhật mới...", 15)
-            remote_data = self.fetch_remote_version()
+        self.set_status("Đang kiểm tra bản phát hành trên GitHub...", 10)
+        release_info = self.fetch_latest_release()
 
         need_download = False
-        remote_ver = self.local_version
-        download_url = None
+        target_asset = None
+        remote_tag = local_ver
 
-        if remote_data:
-            remote_ver = remote_data.get("version", self.local_version)
-            download_url = remote_data.get("download_url")
-            # Tự động suy ra link main.zip nếu không khai báo
-            if not download_url and "github.com" in self.github_repo:
-                download_url = f"{self.github_repo}/archive/refs/heads/main.zip"
+        if release_info:
+            remote_tag = release_info.get("tag_name", "").lstrip("vV")
+            assets = release_info.get("assets", [])
+            # Tìm asset zip (ưu tiên file zip chứa OpenCut hoặc Core)
+            for a in assets:
+                name = a.get("name", "").lower()
+                if name.endswith(".zip"):
+                    target_asset = a
+                    break
 
-            if parse_semver(remote_ver) > parse_semver(self.local_version):
+            if not has_engine:
                 need_download = True
-            elif not has_server:
+            elif target_asset and parse_semver(remote_tag) > parse_semver(local_ver):
                 need_download = True
 
-        if not has_server and not need_download and not remote_data:
-            self.set_status("Lỗi: Không thể tải mã nguồn lần đầu do mất mạng.", 0)
+        # Nếu chưa có Engine mà không thể kết nối GitHub
+        if not has_engine and (not release_info or not target_asset):
+            self.set_status("Lỗi: Không tìm thấy gói Engine trên GitHub.", 0)
             messagebox.showerror(
-                "Lỗi kết nối",
-                "Chưa tìm thấy OpenCut Studio trên máy và không có kết nối Internet.\n\nVui lòng kiểm tra lại mạng và mở lại ứng dụng."
+                "Chưa có bản phát hành",
+                "Chưa tìm thấy gói cài đặt Engine trên GitHub Releases.\n\n"
+                f"Vui lòng tạo Release trên GitHub: {self.github_repo}/releases "
+                "và đính kèm file zip đóng gói của Studio."
             )
             self.quit()
             return
 
-        # 2. Tải bản cập nhật hoặc cài đặt mới
-        if need_download and download_url:
-            self.set_status(f"Đang tải bản cập nhật v{remote_ver}...", 25)
-            success = self.download_and_extract(download_url, remote_ver, remote_data)
-            if not success and not has_server:
-                self.set_status("Cài đặt thất bại.", 0)
-                messagebox.showerror("Lỗi tải bản cài đặt", "Không thể hoàn tất tải ứng dụng từ máy chủ.")
+        # Tải Engine đóng gói
+        if need_download and target_asset:
+            download_url = target_asset.get("browser_download_url")
+            asset_size = target_asset.get("size", 0)
+            asset_name = target_asset.get("name", "Engine.zip")
+
+            self.set_status(f"Đang tải {asset_name}...", 20)
+            success = self.download_and_extract_engine(download_url, asset_size, remote_tag)
+            if not success and not has_engine:
+                messagebox.showerror("Lỗi tải Engine", "Quá trình tải gói Engine thất bại. Vui lòng kiểm tra kết nối mạng.")
                 self.quit()
                 return
 
-        # 3. Khởi động ứng dụng
-        self.set_status("Đang khởi động Web Studio...", 90)
-        self.launch_studio()
+        # Tìm lại engine_exe sau khi giải nén
+        engine_exe = find_engine_exe(self.install_dir)
+        if not engine_exe or not os.path.exists(engine_exe):
+            self.set_status("Không tìm thấy file OpenCutStudio.exe sau khi giải nén.", 0)
+            messagebox.showerror("Lỗi cài đặt", "Không tìm thấy file OpenCutStudio.exe trong gói giải nén.")
+            self.quit()
+            return
 
-    def fetch_remote_version(self):
-        try:
-            # Chuyển link https://github.com/user/repo -> https://raw.githubusercontent.com/user/repo/main/version.json
-            repo_clean = self.github_repo.replace("https://github.com/", "").replace("http://github.com/", "")
-            raw_url = f"https://raw.githubusercontent.com/{repo_clean}/main/version.json"
-            req = urllib.request.Request(raw_url, headers={"User-Agent": "OpenCutLauncher/2.0"})
-            with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return None
+        # Khởi chạy Engine
+        self.set_status("Đang khởi động OpenCut Studio Engine...", 95)
+        self.launch_engine(engine_exe)
 
-    def download_and_extract(self, download_url: str, new_ver: str, remote_data: dict) -> bool:
-        temp_dir = os.path.join(self.app_dir, "temp_uploads")
+    def download_and_extract_engine(self, url: str, total_bytes: int, tag_version: str) -> bool:
+        temp_dir = os.path.join(self.install_dir, "temp_downloads")
         os.makedirs(temp_dir, exist_ok=True)
-        zip_path = os.path.join(temp_dir, "update_payload.zip")
+        zip_path = os.path.join(temp_dir, "engine_download.zip")
 
         try:
-            req = urllib.request.Request(download_url, headers={"User-Agent": "OpenCutLauncher/2.0"})
-            with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out_f:
-                total_size = resp.getheader("Content-Length")
-                total_bytes = int(total_size) if total_size and total_size.isdigit() else 0
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenCutLauncher/2.0"})
+            with urllib.request.urlopen(req, timeout=120) as resp, open(zip_path, "wb") as out_f:
                 downloaded = 0
-                block_size = 64 * 1024
-
+                block_size = 128 * 1024
                 while True:
                     chunk = resp.read(block_size)
                     if not chunk:
@@ -270,56 +294,45 @@ class LauncherApp(tk.Tk):
                     out_f.write(chunk)
                     downloaded += len(chunk)
                     if total_bytes > 0:
-                        pct = 25 + int((downloaded / total_bytes) * 60)
+                        pct = 20 + int((downloaded / total_bytes) * 65)
                         mb = downloaded / (1024 * 1024)
                         total_mb = total_bytes / (1024 * 1024)
-                        self.set_status(f"Đang tải v{new_ver}: {mb:.1f}MB / {total_mb:.1f}MB ({pct}%)", pct)
+                        self.set_status(f"Đang tải Core Engine: {mb:.1f}MB / {total_mb:.1f}MB ({pct}%)", pct)
                     else:
                         mb = downloaded / (1024 * 1024)
-                        self.set_status(f"Đang tải v{new_ver}: {mb:.1f}MB...", 50)
+                        self.set_status(f"Đang tải: {mb:.1f}MB...", 50)
 
-            self.set_status("Đang cài đặt file cập nhật...", 88)
+            self.set_status("Đang giải nén Engine...", 88)
+            app_dir = os.path.join(self.install_dir, "app")
+            os.makedirs(app_dir, exist_ok=True)
+
             with zipfile.ZipFile(zip_path, "r") as zf:
                 namelist = zf.namelist()
                 prefix = ""
-                if namelist and "/" in namelist[0]:
-                    prefix = namelist[0].split("/")[0] + "/"
+                # Kiểm tra nếu zip có thư mục gốc bọc bên ngoài
+                parts = namelist[0].replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] and all(n.startswith(parts[0] + "/") for n in namelist if n.strip()):
+                    prefix = parts[0] + "/"
 
                 for member in zf.infolist():
-                    rel_path = member.filename
-                    if prefix and rel_path.startswith(prefix):
-                        rel_path = rel_path[len(prefix):]
-                    if not rel_path or rel_path.endswith("/"):
+                    rel = member.filename
+                    if prefix and rel.startswith(prefix):
+                        rel = rel[len(prefix):]
+                    if not rel or rel.endswith("/"):
                         continue
 
-                    first_part = rel_path.replace("\\", "/").split("/")[0]
-                    if first_part in PROTECTED_ITEMS or rel_path in PROTECTED_ITEMS:
-                        continue
+                    # Không đè các file cấu hình người dùng
+                    if rel in ["config.json", "cookies.txt", "session_data.json"]:
+                        user_cfg = os.path.join(app_dir, rel)
+                        if os.path.exists(user_cfg):
+                            continue
 
-                    target = os.path.join(self.app_dir, rel_path)
+                    target = os.path.join(app_dir, rel)
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     with zf.open(member) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst)
 
-            # Cập nhật version.json cục bộ
-            ver_path = os.path.join(self.app_dir, "version.json")
-            with open(ver_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "version": new_ver,
-                    "release_date": (remote_data or {}).get("release_date", ""),
-                    "changelog": (remote_data or {}).get("changelog", ""),
-                    "download_url": download_url
-                }, f, indent=2, ensure_ascii=False)
-
-            # Khởi tạo config.json từ config.example.json nếu máy mới tinh
-            cfg_p = os.path.join(self.app_dir, "config.json")
-            cfg_ex = os.path.join(self.app_dir, "config.example.json")
-            if not os.path.exists(cfg_p) and os.path.exists(cfg_ex):
-                try:
-                    shutil.copy(cfg_ex, cfg_p)
-                except Exception:
-                    pass
-
+            self.set_local_version(tag_version)
             return True
         except Exception as e:
             print(f"[Launcher] Download error: {e}")
@@ -331,67 +344,51 @@ class LauncherApp(tk.Tk):
                 except Exception:
                     pass
 
-    def launch_studio(self):
-        # Dọn dẹp tiến trình treo cổng 8000
+    def launch_engine(self, engine_exe: str):
+        """Khởi động file OpenCutStudio.exe (Engine độc lập mã máy)."""
+        engine_dir = os.path.dirname(engine_exe)
+
+        # Dọn port 8000 nếu đang có process cũ chiếm giữ
         try:
-            for port in [8000]:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    if s.connect_ex(("127.0.0.1", port)) == 0:
-                        subprocess.run(
-                            ["powershell", "-Command", f"Get-Process -Id (Get-NetTCPConnection -LocalPort {port}).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
-                            capture_output=True,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                        )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(("127.0.0.1", 8000)) == 0:
+                    subprocess.run(
+                        ["powershell", "-Command", "Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
+                        capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
         except Exception:
             pass
 
-        # Tìm python exe phù hợp
-        py_exe = sys.executable
-        venv_py = os.path.join(self.app_dir, ".venv", "Scripts", "python.exe")
-        if os.path.exists(venv_py):
-            py_exe = venv_py
-
-        # Khởi chạy server.py
-        server_py = os.path.join(self.app_dir, "server.py")
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-
         try:
+            # Khởi chạy engine_exe trong thư mục của nó
             subprocess.Popen(
-                [py_exe, "-X", "utf8", server_py],
-                cwd=self.app_dir,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                [engine_exe],
+                cwd=engine_dir,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
         except Exception as e:
-            messagebox.showerror("Lỗi khởi động", f"Không thể khởi động server: {e}")
+            messagebox.showerror("Lỗi khởi động Engine", f"Không thể bật engine: {e}")
             self.quit()
             return
 
-        # Chờ server mở cổng và bật trình duyệt
-        self.set_status("Đang mở trình duyệt...", 100)
-        time.sleep(1.8)
+        # Chờ port 8000 sẵn sàng và mở giao diện
+        self.set_status("Đang mở giao diện Studio...", 100)
+        time.sleep(2.5)
 
+        # Mở Edge/Chrome ở dạng cửa sổ Desktop app
         url = "http://127.0.0.1:8000"
         try:
-            subprocess.Popen(
-                ["msedge.exe", f"--app={url}", "--window-size=1440,900"],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
+            subprocess.Popen(["msedge.exe", f"--app={url}", "--window-size=1440,900"],
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception:
             try:
-                subprocess.Popen(
-                    ["chrome.exe", f"--app={url}", "--window-size=1440,900"],
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                )
+                subprocess.Popen(["chrome.exe", f"--app={url}", "--window-size=1440,900"],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except Exception:
                 import webbrowser
                 webbrowser.open(url)
 
-        # Đóng launcher
         time.sleep(1.0)
         self.destroy()
 

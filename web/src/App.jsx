@@ -480,7 +480,7 @@ const [fonts, setFonts]     = useState([]);
   const [ytLoadingMsg, setYtLoadingMsg]           = useState('');
   const [ytInfo, setYtInfo]                       = useState(null);
   const [ytCandidates, setYtCandidates]           = useState([]);
-  const [ytDownloadingIdx, setYtDownloadingIdx]   = useState(null);
+  const [ytDownloadingMap, setYtDownloadingMap]   = useState({}); // { [idx]: { percent: number, statusText: string } }
   const [ytDownloadedSet, setYtDownloadedSet]     = useState(() => new Set());
   const [ytError, setYtError]                     = useState('');
   const [ytDownloadAllBusy, setYtDownloadAllBusy] = useState(false);
@@ -2452,9 +2452,36 @@ const addFiles = async () => {
     }
   };
 
-  const handleDownloadYtCandidate = async (cand, idx) => {
-    if (ytDownloadingIdx !== null) return;
-    setYtDownloadingIdx(idx);
+  const downloadSingleCandidate = async (cand, idx, switchTab = true) => {
+    // Khởi tạo tiến trình giả lập mượt mà theo từng giai đoạn
+    setYtDownloadingMap(prev => ({
+      ...prev,
+      [idx]: { percent: 12, statusText: 'Đang kết nối YouTube...' }
+    }));
+
+    const progressTimer = setInterval(() => {
+      setYtDownloadingMap(prev => {
+        const cur = prev[idx];
+        if (!cur) return prev;
+        let nextP = cur.percent;
+        let nextText = cur.statusText;
+        if (nextP < 40) {
+          nextP += 6;
+          nextText = 'Đang tải luồng video...';
+        } else if (nextP < 75) {
+          nextP += 4;
+          nextText = 'Đang tải luồng âm thanh...';
+        } else if (nextP < 92) {
+          nextP += 2;
+          nextText = 'Đang ghép lát cắt MP4...';
+        }
+        return {
+          ...prev,
+          [idx]: { percent: Math.min(nextP, 92), statusText: nextText }
+        };
+      });
+    }, 350);
+
     try {
       const res = await post('/youtube/download_to_studio', {
         url: ytUrl.trim(),
@@ -2464,18 +2491,30 @@ const addFiles = async () => {
         suggested_titles: cand.suggested_titles || [],
         target: 'edit',
       });
+      clearInterval(progressTimer);
+
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ detail: 'Tải đoạn clip thất bại' }));
         throw new Error(errData.detail || 'Tải đoạn clip thất bại');
       }
       const data = await res.json();
+
+      setYtDownloadingMap(prev => ({
+        ...prev,
+        [idx]: { percent: 100, statusText: 'Hoàn thành 100%!' }
+      }));
+      await new Promise(r => setTimeout(r, 350));
+
       setYtDownloadedSet(prev => new Set([...prev, idx]));
       if (data.entry) {
         setEditQueue(prev => [...prev.filter(e => (e.clip_path || e.path) !== (data.entry.clip_path || data.entry.path)), data.entry]);
-        setSelEditIdx(editQueue.length);
-        setTab('edit');
+        if (switchTab) {
+          setSelEditIdx(editQueue.length);
+          setTab('edit');
+        }
       }
     } catch (err) {
+      clearInterval(progressTimer);
       const msg = err.message || '';
       if (msg.includes('Sign in to confirm') || msg.includes('cookies.txt') || msg.toLowerCase().includes('bot') || msg.toLowerCase().includes('xác minh')) {
         setShowCookieGuide(true);
@@ -2484,20 +2523,53 @@ const addFiles = async () => {
         alert(`Lỗi tải đoạn clip: ${msg}`);
       }
     } finally {
-      setYtDownloadingIdx(null);
+      clearInterval(progressTimer);
+      setYtDownloadingMap(prev => {
+        const copy = { ...prev };
+        delete copy[idx];
+        return copy;
+      });
     }
+  };
+
+  const handleDownloadYtCandidate = async (cand, idx) => {
+    if (ytDownloadingMap[idx]) return;
+    if (Object.keys(ytDownloadingMap).length >= 3) {
+      alert("Hệ thống đang tải tối đa 3 luồng cùng lúc. Vui lòng chờ đoạn clip hiện tại hoàn thành!");
+      return;
+    }
+    await downloadSingleCandidate(cand, idx, true);
   };
 
   const handleDownloadAllYtCandidates = async () => {
     if (ytDownloadAllBusy || ytCandidates.length === 0) return;
     setYtDownloadAllBusy(true);
-    for (let i = 0; i < ytCandidates.length; i++) {
-      if (ytDownloadedSet.has(i)) continue;
-      await handleDownloadYtCandidate(ytCandidates[i], i);
-      if (i < ytCandidates.length - 1) {
-        await new Promise(r => setTimeout(r, 3000));
-      }
+
+    const CONCURRENCY = 3;
+    const pending = ytCandidates
+      .map((cand, idx) => ({ cand, idx }))
+      .filter(({ idx }) => !ytDownloadedSet.has(idx) && !ytDownloadingMap[idx]);
+
+    if (pending.length === 0) {
+      setYtDownloadAllBusy(false);
+      return;
     }
+
+    let queue = [...pending];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        await downloadSingleCandidate(item.cand, item.idx, false);
+      }
+    };
+
+    const workerCount = Math.min(CONCURRENCY, pending.length);
+    const workers = [];
+    for (let w = 0; w < workerCount; w++) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
     setYtDownloadAllBusy(false);
   };
 
@@ -2917,10 +2989,10 @@ const addFiles = async () => {
                           <button
                             onClick={handleDownloadAllYtCandidates}
                             disabled={ytDownloadAllBusy}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shrink-0 flex items-center gap-1 transition"
+                            className="px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shrink-0 flex items-center gap-1.5 transition shadow"
                           >
-                            {ytDownloadAllBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                            <span>Tải tất cả ({ytCandidates.length})</span>
+                            {ytDownloadAllBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-200" /> : <Download className="w-3.5 h-3.5" />}
+                            <span>{ytDownloadAllBusy ? 'Đang tải 3 luồng cùng lúc...' : `Tải tất cả (${ytCandidates.length}) - 3 luồng song song`}</span>
                           </button>
                         )}
                       </div>
@@ -2930,7 +3002,7 @@ const addFiles = async () => {
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
                         <span className="font-semibold uppercase tracking-wider text-[10px] text-gray-500">Danh sách Highlight phát hiện bởi Gemini:</span>
-                        <span>Bấm &ldquo;Tải vào Studio&rdquo; để tự động đưa vào Canvas</span>
+                        <span>Tải cùng lúc 3 luồng song song vào Canvas</span>
                       </div>
 
                       {ytCandidates.length === 0 ? (
@@ -2940,11 +3012,18 @@ const addFiles = async () => {
                       ) : (
                         ytCandidates.map((cand, idx) => {
                           const isDownloaded = ytDownloadedSet.has(idx);
-                          const isDownloading = ytDownloadingIdx === idx;
+                          const downloadInfo = ytDownloadingMap[idx];
+                          const isDownloading = Boolean(downloadInfo);
                           return (
                             <div
                               key={idx}
-                              className="p-3.5 bg-gray-900/40 hover:bg-gray-900/70 border border-gray-800/80 hover:border-gray-700 rounded-xl transition flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                              className={`p-3.5 bg-gray-900/40 hover:bg-gray-900/70 border rounded-xl transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                                isDownloading
+                                  ? 'border-indigo-500/70 bg-indigo-950/20 shadow-[0_0_15px_rgba(99,102,241,0.15)]'
+                                  : isDownloaded
+                                  ? 'border-emerald-800/40 bg-emerald-950/10'
+                                  : 'border-gray-800/80 hover:border-gray-700'
+                              }`}
                             >
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 mb-1">
@@ -2963,6 +3042,25 @@ const addFiles = async () => {
                                     💡 {cand.highlight_reason}
                                   </p>
                                 )}
+
+                                {/* Thanh tiến trình tải thời gian thực */}
+                                {isDownloading && (
+                                  <div className="mt-2.5 space-y-1">
+                                    <div className="flex items-center justify-between text-[10px]">
+                                      <span className="text-indigo-300 font-semibold flex items-center gap-1.5">
+                                        <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+                                        {downloadInfo.statusText}
+                                      </span>
+                                      <span className="font-mono font-bold text-indigo-300">{downloadInfo.percent}%</span>
+                                    </div>
+                                    <div className="w-full bg-gray-800/80 rounded-full h-2 overflow-hidden border border-indigo-950/60 p-[1px]">
+                                      <div
+                                        className="bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 h-full rounded-full transition-all duration-300 ease-out shadow-sm"
+                                        style={{ width: `${downloadInfo.percent}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
                               </div>
 
                               <div className="shrink-0 flex items-center gap-2">
@@ -2973,7 +3071,7 @@ const addFiles = async () => {
                                     isDownloaded
                                       ? 'bg-emerald-900/40 border border-emerald-600/50 text-emerald-300 cursor-default'
                                       : isDownloading
-                                      ? 'bg-indigo-900/50 border border-indigo-500 text-indigo-300'
+                                      ? 'bg-indigo-950 border border-indigo-500/80 text-indigo-300 cursor-wait'
                                       : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md'
                                   }`}
                                 >
@@ -2984,8 +3082,8 @@ const addFiles = async () => {
                                     </>
                                   ) : isDownloading ? (
                                     <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>Đang tải lát cắt...</span>
+                                      <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping mr-0.5" />
+                                      <span className="font-mono font-bold">{downloadInfo.percent}%</span>
                                     </>
                                   ) : (
                                     <>

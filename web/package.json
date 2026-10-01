@@ -1,7 +1,7 @@
 {
   "name": "opencut-clipper-studio",
   "private": true,
-  "version": "2.8.6",
+  "version": "2.9.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
