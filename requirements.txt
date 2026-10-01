@@ -1,0 +1,28 @@
+# ── Viral Bodycam Clipper — Python dependencies ──────────────────────────────
+# Install: pip install -r requirements.txt
+
+# Google Gemini SDK (video analysis + auto-subtitles)
+google-genai>=0.7.0
+
+# Image rendering (preview canvas, title card, watermark)
+Pillow>=10.0.0
+
+# Clipboard copy support
+pyperclip>=1.8.0
+
+# Object tracking (for "Track Object" blur feature)
+# Includes CSRT, KCF, MIL trackers via contrib modules
+opencv-contrib-python>=4.8.0
+
+# Web Server Engine (FastAPI + Uvicorn + WebSockets)
+fastapi>=0.100.0
+uvicorn>=0.22.0
+websockets>=11.0
+python-multipart>=0.0.6
+
+# Local Speech-to-Text & Millisecond Acoustic Alignment
+openai-whisper
+stable-ts>=2.14.0
+
+# YouTube Visual/Media Downloader & Segment Extractor
+yt-dlp>=2024.08.06

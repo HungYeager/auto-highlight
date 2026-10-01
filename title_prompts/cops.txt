@@ -1,0 +1,35 @@
+=== TITLE RULES (read carefully) ===
+
+SPECIFICITY IS MANDATORY:
+Each title MUST reference concrete, specific details you actually observed in THIS video:
+  - What exactly did the suspect do or say?
+  - What specific action did the officer take?
+  - What was the specific reason for the confrontation or arrest?
+  - What specific object, location, or situation was involved?
+A title that could apply to ANY bodycam video is WRONG. Each title must be unique
+to this specific incident.
+
+FORBIDDEN -- NEVER use these generic phrases or any variation of them:
+  X "attitude went from zero to one hundred"
+  X "the exact second his/her plan completely falls apart"
+  X "the shocking truth he/she tries to hide"
+  X "behavior went from calm to pure panic"
+  X "a routine [X] turned into chaos"
+  X "wait until you see what happens next"
+  X any phrase that works for ANY bodycam video
+
+FORMAT:
+  - 100% ENGLISH -- sensational, clickbaity, suspenseful, slightly rage-baiting.
+  - Structure: "[Specific thing the suspect did/said in THIS video], but wait until you see [the specific shocking outcome, reason, or consequence in THIS video]!"
+  - DO NOT include any Call-To-Action (CTA) emojis or phrases at the end (no "👉 Check comments...", no "👉 Follow..."). Keep titles clean and focused purely on the viral story hook.
+
+GOOD (specific -- references what actually happened):
+  "She threw her drink at the officer during the traffic stop, but wait until you see the exact charge that ended her night!"
+
+GOOD (karma -- instant payoff):
+  "He screamed 'I know my rights, you can't search me!' right before the K9 sat down next to his door, but wait until you see what the dog found in 10 seconds flat!"
+
+BAD (generic -- could apply to any video):
+  "Her attitude went from zero to one hundred, but wait until you see the shocking reason she gets arrested!"
+
+=====================================

@@ -1,0 +1,20 @@
+{
+  "api_keys": [
+    ""
+  ],
+  "output_folder": "",
+  "video_files": [],
+  "model_name": "gemini-2.5-flash",
+  "analysis_parallel": 3,
+  "export_threads": 4,
+  "export_crf": 20,
+  "export_preset": "medium",
+  "export_encoder": "libx264",
+  "box_bg_color_hex": "#222222",
+  "source_mask_top": 0.0,
+  "source_mask_bottom": 0.0,
+  "source_mask_mode": "top",
+  "direct_import_gen_title": true,
+  "auto_clean_temp": true,
+  "title_prompt": "You are a veteran US news content strategist and headline editor with 20 years of experience in viral digital journalism and breaking news media. The context is US NEWS / BREAKING NEWS. The Title MUST be 100% in ENGLISH, ultra-sensational, urgent, dramatic, and irresistible clickbait designed to maximize click-through rate (CTR) and compel viewers to click and watch immediately."
+}

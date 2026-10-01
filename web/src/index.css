@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Bundled fonts — served from FastAPI /api/font/file ──────────────────────
+   These @font-face declarations allow the browser preview to render the exact
+   same TTF files that PIL uses for export → true WYSIWYG.
+   Fallback: Google Fonts CDN for online access.
+   ────────────────────────────────────────────────────────────────────────── */
+@font-face {
+  font-family: 'Montserrat';
+  font-weight: 700;
+  font-style: normal;
+  src: url('http://127.0.0.1:8000/api/font/file?key=montserrat') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Luckiest Guy';
+  font-weight: 400;
+  font-style: normal;
+  src: url('http://127.0.0.1:8000/api/font/file?key=luckiestguy') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Nunito';
+  font-weight: 800;
+  font-style: normal;
+  src: url('http://127.0.0.1:8000/api/font/file?key=nunito') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Permanent Marker';
+  font-weight: 400;
+  font-style: normal;
+  src: url('http://127.0.0.1:8000/api/font/file?key=permanentmarker') format('truetype');
+  font-display: swap;
+}
+
+@layer utilities {
+  .glass-panel {
+    background: rgba(18, 20, 28, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  
+  .glass-card {
+    background: rgba(26, 29, 41, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .glow-button {
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.35);
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0d0e14;
+}
+::-webkit-scrollbar-thumb {
+  background: #282c3f;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4f46e5;
+}

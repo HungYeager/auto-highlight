@@ -1,0 +1,62 @@
+# ============================================================
+# Git Ignore for OpenCut Bodycam Studio
+# ============================================================
+
+# ── CRITICAL: Secrets & Personal Credentials ──
+config.json
+cookies.txt
+session_data.json
+*.pem
+*.key
+.env
+.env.*
+
+# ── Python runtime & Virtual Environment ──
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# ── User Media & Temp Processing Folders ──
+output_clips/
+temp_uploads/
+raw_cuts/
+test_out/
+overlay_assets/cutouts/
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
+# ── AI Model Weights & Checkpoints (>100MB blocked by GitHub) ──
+*.onnx
+*.pth
+*.pt
+*.bin
+*.ckpt
+overlay_assets/models/
+ProPainter/weights/*.pth
+
+# ── Build Artifacts & Large Binaries (>100MB blocked by GitHub) ──
+/dist/
+/build/
+*.spec.bak
+*.exe
+*.zip
+*.tar.gz
+
+# ── Node.js / Vite Frontend Dependencies ──
+web/node_modules/
+web/.vite/
+web/dist/stats.html
+
+# ── OS & IDE files ──
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
