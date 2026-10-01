@@ -20,7 +20,7 @@ if exist "%~dp0updater_config.json" (
     set "EXTRA_DATA="
 )
 
-.venv\Scripts\python.exe -m PyInstaller launcher.py --onefile --noconsole --name "OpenCutStudio" --specpath "%~dp0dist_launcher" %EXTRA_DATA% --clean --distpath "%~dp0dist_launcher"
+.venv\Scripts\python.exe -m PyInstaller launcher.py --onefile --noconsole --name "OpenCutStudio" --specpath "dist_launcher" --add-data "%~dp0updater_config.json;." --clean --distpath "dist_launcher"
 
 if errorlevel 1 (
     echo.

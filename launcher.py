@@ -282,34 +282,130 @@ class LauncherApp(tk.Tk):
         os.makedirs(temp_dir, exist_ok=True)
         zip_path = os.path.join(temp_dir, "engine_download.zip")
 
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "OpenCutLauncher/2.0"})
-            with urllib.request.urlopen(req, timeout=120) as resp, open(zip_path, "wb") as out_f:
+        # 1. Kiểm tra nếu có file zip cục bộ trong cùng thư mục launcher (người dùng copy qua USB/Zalo)
+        launcher_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        local_candidates = [
+            os.path.join(launcher_dir, f"OpenCutStudio_v{tag_version}.zip"),
+            os.path.join(launcher_dir, f"OpenCutStudio_{tag_version}.zip"),
+            os.path.join(launcher_dir, "OpenCutStudio.zip"),
+        ]
+        local_zip = None
+        for cand in local_candidates:
+            if os.path.exists(cand) and os.path.getsize(cand) > 10 * 1024 * 1024:
+                local_zip = cand
+                break
+
+        if not local_zip:
+            try:
+                for f in os.listdir(launcher_dir):
+                    if f.lower().endswith(".zip") and "opencut" in f.lower():
+                        full_f = os.path.join(launcher_dir, f)
+                        if os.path.getsize(full_f) > 50 * 1024 * 1024:
+                            local_zip = full_f
+                            break
+            except Exception:
+                pass
+
+        # 2. Nếu có file zip cục bộ, bỏ qua việc tải từ internet
+        target_zip_to_extract = zip_path
+        if local_zip:
+            self.set_status("Phát hiện gói Engine cục bộ trong thư mục, đang giải nén...", 85)
+            target_zip_to_extract = local_zip
+        else:
+            # 3. Tải từ GitHub Releases có hỗ trợ TẢI TIẾP (Resume) nếu bị ngắt giữa chừng
+            try:
+                existing_bytes = 0
+                if os.path.exists(zip_path):
+                    existing_bytes = os.path.getsize(zip_path)
+                    # Nếu file cũ đã đủ kích thước, kiểm tra xem zip có toàn vẹn không
+                    if total_bytes > 0 and existing_bytes >= total_bytes:
+                        try:
+                            with zipfile.ZipFile(zip_path, "r") as test_zf:
+                                if test_zf.testzip() is None:
+                                    existing_bytes = total_bytes
+                        except Exception:
+                            existing_bytes = 0
+
+                req_headers = {"User-Agent": "OpenCutLauncher/2.0"}
+                file_mode = "wb"
                 downloaded = 0
-                block_size = 128 * 1024
-                while True:
-                    chunk = resp.read(block_size)
-                    if not chunk:
-                        break
-                    out_f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_bytes > 0:
-                        pct = 20 + int((downloaded / total_bytes) * 65)
-                        mb = downloaded / (1024 * 1024)
-                        total_mb = total_bytes / (1024 * 1024)
-                        self.set_status(f"Đang tải Core Engine: {mb:.1f}MB / {total_mb:.1f}MB ({pct}%)", pct)
-                    else:
-                        mb = downloaded / (1024 * 1024)
-                        self.set_status(f"Đang tải: {mb:.1f}MB...", 50)
 
-            self.set_status("Đang giải nén Engine...", 88)
-            app_dir = os.path.join(self.install_dir, "app")
-            os.makedirs(app_dir, exist_ok=True)
+                if 0 < existing_bytes < total_bytes:
+                    req_headers["Range"] = f"bytes={existing_bytes}-"
+                    file_mode = "ab"
+                    downloaded = existing_bytes
 
-            with zipfile.ZipFile(zip_path, "r") as zf:
+                if downloaded < total_bytes or total_bytes == 0:
+                    req = urllib.request.Request(url, headers=req_headers)
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        resp_code = getattr(resp, "status", getattr(resp, "code", 200))
+                        if resp_code == 200 and existing_bytes > 0 and downloaded > 0:
+                            file_mode = "wb"
+                            downloaded = 0
+
+                        with open(zip_path, file_mode) as out_f:
+                            block_size = 256 * 1024
+                            start_t = time.time()
+                            last_ui_t = start_t
+                            bytes_since_ui = 0
+
+                            if downloaded > 0:
+                                mb_done = downloaded / (1024 * 1024)
+                                self.set_status(f"Tiếp tục tải từ {mb_done:.1f}MB...", 20)
+
+                            while True:
+                                chunk = resp.read(block_size)
+                                if not chunk:
+                                    break
+                                out_f.write(chunk)
+                                downloaded += len(chunk)
+                                bytes_since_ui += len(chunk)
+
+                                now = time.time()
+                                if now - last_ui_t >= 0.35:
+                                    dt = now - last_ui_t
+                                    speed_mb = (bytes_since_ui / (1024 * 1024)) / dt if dt > 0 else 0
+                                    bytes_since_ui = 0
+                                    last_ui_t = now
+
+                                    if total_bytes > 0:
+                                        pct = 20 + int((downloaded / total_bytes) * 65)
+                                        mb = downloaded / (1024 * 1024)
+                                        total_mb = total_bytes / (1024 * 1024)
+                                        rem_mb = max(0.0, total_mb - mb)
+                                        eta_s = int(rem_mb / speed_mb) if speed_mb > 0.05 else 0
+                                        eta_str = f"{eta_s//60}p{eta_s%60:02d}s" if eta_s >= 60 else f"{eta_s}s"
+                                        self.set_status(
+                                            f"Đang tải v{tag_version}: {mb:.1f}MB/{total_mb:.1f}MB ({pct}%) • {speed_mb:.1f}MB/s • Còn ~{eta_str}",
+                                            pct
+                                        )
+                                    else:
+                                        mb = downloaded / (1024 * 1024)
+                                        self.set_status(f"Đang tải: {mb:.1f}MB...", 50)
+            except Exception as e:
+                print(f"[Launcher] Download error: {e}")
+                return False
+
+        # 4. Đóng mọi tiến trình OpenCutStudio cũ đang chạy để tránh lỗi Permission denied khi ghi đè
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "OpenCutStudio.exe", "/T"],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        # 5. Giải nén Engine vào thư mục app
+        self.set_status(f"Đang giải nén bộ Engine v{tag_version}... Vui lòng đợi trong giây lát!", 88)
+        app_dir = os.path.join(self.install_dir, "app")
+        os.makedirs(app_dir, exist_ok=True)
+
+        try:
+            with zipfile.ZipFile(target_zip_to_extract, "r") as zf:
                 namelist = zf.namelist()
                 prefix = ""
-                # Kiểm tra nếu zip có thư mục gốc bọc bên ngoài
                 parts = namelist[0].replace("\\", "/").split("/")
                 if len(parts) > 1 and parts[0] and all(n.startswith(parts[0] + "/") for n in namelist if n.strip()):
                     prefix = parts[0] + "/"
@@ -321,7 +417,7 @@ class LauncherApp(tk.Tk):
                     if not rel or rel.endswith("/"):
                         continue
 
-                    # Không đè các file cấu hình người dùng
+                    # Giữ nguyên cấu hình người dùng cũ
                     if rel in ["config.json", "cookies.txt", "session_data.json"]:
                         user_cfg = os.path.join(app_dir, rel)
                         if os.path.exists(user_cfg):
@@ -333,12 +429,13 @@ class LauncherApp(tk.Tk):
                         shutil.copyfileobj(src, dst)
 
             self.set_local_version(tag_version)
+            self.set_status(f"Cài đặt hoàn tất! Đang khởi động v{tag_version}...", 98)
             return True
         except Exception as e:
-            print(f"[Launcher] Download error: {e}")
+            print(f"[Launcher] Extract error: {e}")
             return False
         finally:
-            if os.path.exists(zip_path):
+            if not local_zip and os.path.exists(zip_path):
                 try:
                     os.remove(zip_path)
                 except Exception:
