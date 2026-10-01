@@ -24,7 +24,7 @@ from tkinter import ttk, messagebox
 
 APP_NAME = "OpenCut Bodycam Studio"
 DEFAULT_GITHUB_REPO = "https://github.com/HungYeager/auto-highlight"
-TIMEOUT_CHECK = 3
+TIMEOUT_CHECK = 10
 
 
 def get_install_dir() -> str:
@@ -179,37 +179,80 @@ class LauncherApp(tk.Tk):
         self.after(0, _update)
 
     def get_local_version(self) -> str:
+        # 1. Đọc từ version.txt trong thư mục install
         if os.path.exists(self.version_file):
             try:
                 with open(self.version_file, "r", encoding="utf-8") as f:
-                    return f.read().strip()
+                    v = f.read().strip()
+                    if v and v != "0.0.0":
+                        return v
             except Exception:
                 pass
+
+        # 2. Đọc dự phòng từ app/version.json
+        app_vjson = os.path.join(self.install_dir, "app", "version.json")
+        if os.path.exists(app_vjson):
+            try:
+                with open(app_vjson, "r", encoding="utf-8") as f:
+                    v = json.load(f).get("version", "").strip()
+                    if v:
+                        return v
+            except Exception:
+                pass
+
         return "0.0.0"
 
     def set_local_version(self, v_str: str):
+        v_clean = v_str.strip().lstrip("vV")
         try:
             with open(self.version_file, "w", encoding="utf-8") as f:
-                f.write(v_str.strip())
+                f.write(v_clean)
+        except Exception:
+            pass
+        try:
+            app_vjson = os.path.join(self.install_dir, "app", "version.json")
+            if os.path.exists(app_vjson):
+                with open(app_vjson, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                data["version"] = v_clean
+                with open(app_vjson, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
 
     def fetch_latest_release(self):
-        """Lấy thông tin Release mới nhất từ GitHub API."""
+        """Lấy thông tin Release mới nhất từ GitHub API (chống cache CDN và sắp xếp semver chuẩn)."""
+        repo_clean = self.github_repo.replace("https://github.com/", "").replace("http://github.com/", "").rstrip("/")
+        headers = {
+            "User-Agent": "OpenCutLauncher/2.1",
+            "Accept": "application/vnd.github.v3+json",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache"
+        }
+
+        # 1. Thử lấy danh sách releases có timestamp chống CDN cache
         try:
-            repo_clean = self.github_repo.replace("https://github.com/", "").replace("http://github.com/", "").rstrip("/")
+            ts = int(time.time())
+            api_url = f"https://api.github.com/repos/{repo_clean}/releases?per_page=10&_t={ts}"
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
+                releases = json.loads(resp.read().decode("utf-8"))
+                if isinstance(releases, list) and releases:
+                    valid = [r for r in releases if not r.get("draft", False)]
+                    if valid:
+                        valid.sort(key=lambda r: parse_semver(r.get("tag_name", "")), reverse=True)
+                        return valid[0]
+        except Exception as e:
+            print(f"[Launcher] Releases list fetch error: {e}")
+
+        # 2. Fallback sang /releases/latest nếu danh sách lỗi
+        try:
             api_url = f"https://api.github.com/repos/{repo_clean}/releases/latest"
-            req = urllib.request.Request(
-                api_url,
-                headers={
-                    "User-Agent": "OpenCutLauncher/2.0",
-                    "Accept": "application/vnd.github.v3+json"
-                }
-            )
+            req = urllib.request.Request(api_url, headers=headers)
             with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            print(f"[Launcher] Release check error: {e}")
+            print(f"[Launcher] Release latest fetch error: {e}")
             return None
 
     def bootstrap_thread(self):
@@ -252,13 +295,19 @@ class LauncherApp(tk.Tk):
             self.quit()
             return
 
-        # Tải Engine đóng gói
+        # Tải Engine đóng gói hoặc Cập nhật
         if need_download and target_asset:
             download_url = target_asset.get("browser_download_url")
             asset_size = target_asset.get("size", 0)
             asset_name = target_asset.get("name", "Engine.zip")
 
-            self.set_status(f"Đang tải {asset_name}...", 20)
+            if has_engine and parse_semver(remote_tag) > parse_semver(local_ver):
+                self.set_status(f"Phát hiện bản mới v{remote_tag}! Đang tải gói cập nhật...", 15)
+                self.after(0, lambda: self.footer_lbl.config(text=f"Nâng cấp: v{local_ver} ➔ v{remote_tag}"))
+            else:
+                self.set_status(f"Đang chuẩn bị tải gói Studio v{remote_tag}...", 15)
+                self.after(0, lambda: self.footer_lbl.config(text=f"Cài đặt mới: v{remote_tag}"))
+
             success = self.download_and_extract_engine(download_url, asset_size, remote_tag)
             if not success and not has_engine:
                 messagebox.showerror("Lỗi tải Engine", "Quá trình tải gói Engine thất bại. Vui lòng kiểm tra kết nối mạng.")
@@ -297,8 +346,10 @@ class LauncherApp(tk.Tk):
 
         if not local_zip:
             try:
+                clean_tag = tag_version.lstrip("vV")
                 for f in os.listdir(launcher_dir):
-                    if f.lower().endswith(".zip") and "opencut" in f.lower():
+                    name_lower = f.lower()
+                    if name_lower.endswith(".zip") and "opencut" in name_lower and clean_tag in name_lower:
                         full_f = os.path.join(launcher_dir, f)
                         if os.path.getsize(full_f) > 50 * 1024 * 1024:
                             local_zip = full_f
@@ -430,6 +481,7 @@ class LauncherApp(tk.Tk):
 
             self.set_local_version(tag_version)
             self.set_status(f"Cài đặt hoàn tất! Đang khởi động v{tag_version}...", 98)
+            self.after(0, lambda: self.footer_lbl.config(text=f"v{tag_version}"))
             return True
         except Exception as e:
             print(f"[Launcher] Extract error: {e}")

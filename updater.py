@@ -17,12 +17,10 @@ import urllib.request
 import urllib.error
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-# Thay đổi URL này thành link raw GitHub repository của bạn sau khi tạo repo:
-# Ví dụ: "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/version.json"
-UPDATE_SERVER_URL = "https://raw.githubusercontent.com/hunghoang/auto-highlight/main/version.json"
+UPDATE_SERVER_URL = "https://raw.githubusercontent.com/HungYeager/auto-highlight/main/version.json"
 
 # Timeout tối đa (giây). Quá thời gian này sẽ bỏ qua update và mở app ngay
-CHECK_TIMEOUT = 3
+CHECK_TIMEOUT = 5
 
 # Các file / thư mục cá nhân TUYỆT ĐỐI KHÔNG GHI ĐÈ khi cập nhật
 PROTECTED_ITEMS = {
@@ -40,7 +38,7 @@ PROTECTED_ITEMS = {
 }
 
 def parse_version(v_str: str):
-    """Chuyển chuỗi version '2.8.6' thành tuple số (2, 8, 6) để so sánh."""
+    """Chuyển chuỗi version '2.9.1' thành tuple số (2, 9, 1) để so sánh."""
     try:
         clean = str(v_str).strip().lstrip("vV")
         return tuple(int(x) for x in clean.split(".") if x.isdigit())
@@ -49,14 +47,23 @@ def parse_version(v_str: str):
 
 def get_local_version() -> str:
     """Đọc version hiện tại từ version.json cục bộ."""
-    if os.path.exists("version.json"):
-        try:
-            with open("version.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("version", "1.0.0")
-        except Exception:
-            pass
-    return "1.0.0"
+    search_dirs = [
+        os.getcwd(),
+        os.path.dirname(os.path.abspath(__file__)),
+        getattr(sys, "_MEIPASS", "")
+    ]
+    for d in search_dirs:
+        if not d:
+            continue
+        v_file = os.path.join(d, "version.json")
+        if os.path.exists(v_file):
+            try:
+                with open(v_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data.get("version", "2.9.1")
+            except Exception:
+                pass
+    return "2.9.1"
 
 def get_repo_urls():
     """Lấy link version.json và link tải zip từ updater_config.json hoặc UPDATE_SERVER_URL."""
