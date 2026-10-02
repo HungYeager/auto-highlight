@@ -2368,8 +2368,25 @@ def get_clip_thumbnail(path: str, start: float = 0.0):
         m = re.search(r"(?:v=|\/|be\/|embed\/|shorts\/)([a-zA-Z0-9_\-]{11})", path)
         if m:
             vid_id = m.group(1)
+            cached_thumb = _THUMBNAIL_DIR / f"yt_{vid_id}.jpg"
+            if cached_thumb.exists() and cached_thumb.stat().st_size > 500:
+                from fastapi.responses import FileResponse as _FR
+                return _FR(str(cached_thumb), media_type="image/jpeg",
+                           headers={"Cache-Control": "max-age=86400"})
+
+            yt_url = f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
+            try:
+                import urllib.request
+                urllib.request.urlretrieve(yt_url, str(cached_thumb))
+                if cached_thumb.exists() and cached_thumb.stat().st_size > 500:
+                    from fastapi.responses import FileResponse as _FR
+                    return _FR(str(cached_thumb), media_type="image/jpeg",
+                               headers={"Cache-Control": "max-age=86400"})
+            except Exception:
+                pass
+
             from fastapi.responses import RedirectResponse
-            return RedirectResponse(f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg")
+            return RedirectResponse(yt_url)
         meta = getattr(app_state, "yt_metadata", {}).get(path, {})
         if meta.get("thumbnail"):
             from fastapi.responses import RedirectResponse
