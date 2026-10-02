@@ -1,6 +1,6 @@
 {
-  "version": "2.9.2",
-  "release_date": "2026-10-01",
-  "changelog": "- Sửa triệt để lỗi TypeError: _log() missing argument khi cắt clip đơn hoặc chuyển tất cả cảnh\n- Tự động cứu và chuẩn hóa mốc thời gian (MM:SS:00 -> 00:MM:SS) chống lỗi FFmpeg code 3436169992\n- Sửa nút 'Chuyển tất cả cảnh vào Tab 2' tự động tải, thêm vào queue và chuyển thẳng qua Tab 2",
-  "download_url": ""
+  "version": "2.9.3",
+  "release_date": "2026-10-02",
+  "changelog": "- Sửa lỗi Clip Trimmer nhập tay Clip Length (không còn bị cứng 16 giây)\n- Giữ nguyên thiết lập Trimmer (độ dài, start/end offset) khi chuyển đổi giữa các video và các candidate\n- Sửa logic 'Phân tích tất cả': chỉ phân tích các video chưa phân tích, tự động bỏ qua video đã hoàn thành\n- Hỗ trợ cắt hàng loạt (batch cuts) tôn trọng đúng độ dài và offset đã chỉnh",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.3/OpenCutStudio_v2.9.3.zip"
 }

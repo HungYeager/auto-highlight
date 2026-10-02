@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $APP_NAME  = "OpenCutStudio"
-$VERSION   = "2.9.1"
+$VERSION   = "2.9.3"
 if (Test-Path "version.json") {
     try {
         $vJson = Get-Content "version.json" -Raw | ConvertFrom-Json
