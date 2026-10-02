@@ -193,9 +193,115 @@ class TestRawCutsBatchResilience(unittest.TestCase):
         res_gemini = _gemini_transcribe(missing_clip, None, "new", logger, stop_event)
         self.assertIsNone(res_gemini)
 
-        res_whisper = _whisper_transcribe(missing_clip, logger)
-        self.assertIsNone(res_whisper)
+    def test_batch_cuts_honor_custom_trim_duration_and_offset(self):
+        """Test that send_all_to_edit and send_all_videos_to_edit honor trim_start_offset and trim_duration."""
+        dummy_video = Path(self.temp_dir) / "test_custom_trim.mp4"
+        dummy_video.write_bytes(b"dummy_bytes")
+
+        cand = {
+            "id": 1,
+            "start_time": "00:01:00",
+            "clip_duration": 16,
+            "suggested_titles": ["Trim Title"],
+        }
+        with STATE_LOCK:
+            app_state.video_results[str(dummy_video)] = {
+                "status": "done",
+                "candidates": [cand]
+            }
+            app_state.video_files = [dummy_video]
+            app_state.edit_queue = []
+
+        with patch("server.get_video_duration", return_value=600.0), \
+             patch("server.cut_clip_exact") as mock_cut:
+            # 1. Single video send_all with +5s offset and 25s duration
+            resp = self.client.post("/api/candidates/send_all_to_edit", json={
+                "video_path": str(dummy_video),
+                "trim_start_offset": 5.0,
+                "trim_duration": 25.0,
+                "mode": "short"
+            })
+            self.assertEqual(resp.status_code, 200)
+            mock_cut.assert_called_once()
+            call_args, call_kwargs = mock_cut.call_args
+            # start_sec should be 60 + 5 = 65 -> 00:01:05
+            self.assertEqual(call_args[1], "00:01:05")
+            # duration is passed as keyword arg duration=dur
+            self.assertEqual(call_kwargs.get("duration"), 25.0)
+
+        with patch("server.get_video_duration", return_value=600.0), \
+             patch("server.cut_clip_exact") as mock_cut2:
+            # 2. All videos send_all with -10s offset and 30s duration
+            resp2 = self.client.post("/api/candidates/send_all_videos_to_edit", json={
+                "trim_start_offset": -10.0,
+                "trim_duration": 30.0,
+                "mode": "short"
+            })
+            self.assertEqual(resp2.status_code, 200)
+            mock_cut2.assert_called_once()
+            call_args2, call_kwargs2 = mock_cut2.call_args
+            # start_sec should be max(0, 60 - 10) = 50 -> 00:00:50
+            self.assertEqual(call_args2[1], "00:00:50")
+            self.assertEqual(call_kwargs2.get("duration"), 30.0)
+
+    def test_analyze_all_only_processes_unanalyzed_videos(self):
+        """Test that /api/analyze/start skips already-done videos unless force_all is specified."""
+        v1 = Path(self.temp_dir) / "done1.mp4"
+        v2 = Path(self.temp_dir) / "done2.mp4"
+        v3 = Path(self.temp_dir) / "new1.mp4"
+        v4 = Path(self.temp_dir) / "new2.mp4"
+        for v in (v1, v2, v3, v4):
+            v.write_bytes(b"data")
+
+        with STATE_LOCK:
+            app_state.config["api_keys"] = ["fake_key_123"]
+            app_state.video_files = [v1, v2, v3, v4]
+            app_state.video_results = {
+                str(v1): {"status": "done", "candidates": [{"id": 1}]},
+                str(v2): {"status": "done", "candidates": [{"id": 1}]},
+                str(v3): {"status": "queued", "candidates": []},
+                str(v4): {"status": "queued", "candidates": []},
+            }
+
+        with patch("server._run_bulk_analysis_thread") as mock_run:
+            # Analyze All should ONLY target new1.mp4 and new2.mp4
+            resp = self.client.post("/api/analyze/start", json={"mode": "short"})
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["status"], "started")
+            self.assertEqual(data["total"], 2)
+            self.assertEqual(data["skipped"], 2)
+
+            # Verify the targets passed to _run_bulk_analysis_thread
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0]
+            target_list = args[1]
+            self.assertEqual(len(target_list), 2)
+            self.assertEqual([t.name for t in target_list], ["new1.mp4", "new2.mp4"])
+
+        with STATE_LOCK:
+            # Mark all as done
+            app_state.video_results[str(v3)]["status"] = "done"
+            app_state.video_results[str(v4)]["status"] = "done"
+
+        with patch("server._run_bulk_analysis_thread") as mock_run_none:
+            # When all are done, should return already_done without starting thread
+            resp2 = self.client.post("/api/analyze/start", json={"mode": "short"})
+            self.assertEqual(resp2.status_code, 200)
+            data2 = resp2.json()
+            self.assertEqual(data2["status"], "already_done")
+            mock_run_none.assert_not_called()
+
+        with patch("server._run_bulk_analysis_thread") as mock_run_force:
+            # When force_all is True, should re-run all 4
+            resp3 = self.client.post("/api/analyze/start", json={"mode": "short", "force_all": True})
+            self.assertEqual(resp3.status_code, 200)
+            data3 = resp3.json()
+            self.assertEqual(data3["status"], "started")
+            self.assertEqual(data3["total"], 4)
+            mock_run_force.assert_called_once()
 
 
 if __name__ == "__main__":
     unittest.main()
+

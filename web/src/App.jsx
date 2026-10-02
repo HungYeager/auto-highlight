@@ -437,8 +437,8 @@ const [editQueue, setEditQueue] = useState([]);       // Tab 2 queue: {clip_path
 const [selCand, setSelCand]     = useState(0);        // ── selected candidate index
 const [selTitle, setSelTitle]   = useState('');       // ── title user clicked in Tab 1
 const [lastCutPath, setLastCutPath] = useState('');   // path of last cut clip (from /api/cut)
-  const [trimStart, setTrimStart] = useState(0);        // trim offset seconds (shift start earlier/later)
-  const [trimEnd,   setTrimEnd]   = useState(0);        // trim offset seconds (shift end earlier/later)
+  const [trimStart, setTrimStart] = useState(() => Number(localStorage.getItem('trimStart') || 0));
+  const [trimEnd,   setTrimEnd]   = useState(() => Number(localStorage.getItem('trimEnd') || 0));
   // analysisMode persists via localStorage: 'short' | 'story'
   const [analysisMode, setAnalysisMode] = useState(() => localStorage.getItem('analysisMode') || 'short');
   // clipDuration: user-set target length in Short Mode (persists via localStorage)
@@ -2258,9 +2258,18 @@ const addFiles = async () => {
   };
 
   const startAnalysis = async () => {
+    const unanalyzed = (videos || []).filter(v => v.status !== 'done');
+    if (videos.length > 0 && unanalyzed.length === 0) {
+      const reRun = window.confirm('Tất cả video trong danh sách đã được phân tích xong.\n\nBạn có muốn phân tích lại TOÀN BỘ danh sách không?');
+      if (!reRun) return;
+      const r = await post('/analyze/start', { mode: analysisMode, force_all: true });
+      if (!r.ok) { const d = await r.json(); alert(d.detail || 'Start failed'); }
+      return;
+    }
     const r = await post('/analyze/start', { mode: analysisMode });
     if (!r.ok) { const d = await r.json(); alert(d.detail || 'Start failed'); }
   };
+  const retryErrors  = () => post('/analyze/start', { mode: analysisMode, retry_errors: true });
   const stopAnalysis = () => post('/analyze/stop', {});
   const stopExport   = () => post('/export/stop', {});
   // ── YouTube Direct Visual Analysis Handlers ──
@@ -3180,7 +3189,8 @@ const addFiles = async () => {
     try {
       // Dùng clip_duration của candidate nếu Story Mode (AI đã xác định), fallback về clipDuration (Short Mode)
       const cand = selVideo?.candidates?.[selCand];
-      const baseDuration = cand?.clip_duration ?? clipDuration;
+      const isStory = analysisMode === 'story' && cand?.clip_duration && cand.clip_duration !== 16;
+      const baseDuration = isStory ? cand.clip_duration : (clipDuration || 16);
       const trimDuration = Math.max(1, baseDuration + trimEnd - trimStart);
       const startTime = cand?.start_time || cand?.start_ts || '00:00:00';
       const r = await post('/cut', {
@@ -3211,7 +3221,13 @@ const addFiles = async () => {
     }
     setSendAllBusy(true);
     try {
-      const r = await post('/candidates/send_all_to_edit', { video_path: selVideo.path });
+      const effDuration = Math.max(1, (clipDuration || 16) + trimEnd - trimStart);
+      const r = await post('/candidates/send_all_to_edit', {
+        video_path: selVideo.path,
+        trim_start_offset: trimStart,
+        trim_duration: effDuration,
+        mode: analysisMode,
+      });
       const d = await r.json();
       if (r.ok) {
         if (d.entries && Array.isArray(d.entries)) {
@@ -3254,7 +3270,12 @@ const addFiles = async () => {
 
     setSendAllVideosBusy(true);
     try {
-      const r = await post('/candidates/send_all_videos_to_edit', {});
+      const effDuration = Math.max(1, (clipDuration || 16) + trimEnd - trimStart);
+      const r = await post('/candidates/send_all_videos_to_edit', {
+        trim_start_offset: trimStart,
+        trim_duration: effDuration,
+        mode: analysisMode,
+      });
       const d = await r.json();
       if (r.ok) {
         if (d.entries && Array.isArray(d.entries)) {
@@ -3796,8 +3817,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
         e.preventDefault();
         if (!selVideo) return;
         const idx = videos.findIndex(v => v.path === selVideo.path);
-        const next = videos[idx + 1];
-        if (next) { setSelVideo(next); setSelCand(0); setSelTitle(''); setLastCutPath(''); setTrimStart(0); setTrimEnd(0); }
+        if (next) { setSelVideo(next); setSelCand(0); setSelTitle(''); setLastCutPath(''); }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -3932,7 +3952,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
               <span>Select Files or Drag & Drop videos here</span>
             </button>
             : videos.map(v => (
-              <div key={v.path} onClick={() => { setSelVideo(v); setSelCand(0); setSelTitle(''); setLastCutPath(''); setTrimStart(0); setTrimEnd(0); }}
+              <div key={v.path} onClick={() => { setSelVideo(v); setSelCand(0); setSelTitle(''); setLastCutPath(''); }}
                 className={`px-2.5 py-1.5 border-b border-gray-800/30 cursor-pointer transition flex items-center gap-1.5 ${selVideo?.path === v.path ? 'bg-indigo-600/20' : 'hover:bg-gray-800/40'}`}>
                 <div className="flex-1 overflow-hidden">
                   <div className="flex items-center gap-1">
@@ -4003,7 +4023,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
             {videos.length === 0
               ? <p className="text-[9px] text-gray-700 text-center py-3">No videos — add files from sidebar</p>
               : videos.map(v => (
-                <div key={v.path} onClick={() => { setSelVideo(v); setSelCand(0); setSelTitle(''); setLastCutPath(''); setTrimStart(0); setTrimEnd(0); }}
+                <div key={v.path} onClick={() => { setSelVideo(v); setSelCand(0); setSelTitle(''); setLastCutPath(''); }}
                   className={`px-3 py-1.5 border-b border-gray-800/20 cursor-pointer flex items-center transition ${selVideo?.path === v.path ? 'bg-indigo-600/20' : 'hover:bg-gray-800/30'}`}>
                   <span className="text-[10px] text-gray-200 flex-1 truncate">{v.name}</span>
                   <div className="w-28 flex items-center justify-end gap-1.5">
@@ -4053,7 +4073,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     return (
                       <button
                         key={i}
-                        onClick={() => { setSelCand(i); setSelTitle(''); setLastCutPath(''); setTrimStart(0); /* giữ trimEnd — xác định lại end offset */ }}
+                        onClick={() => { setSelCand(i); setSelTitle(''); setLastCutPath(''); }}
                         className={`flex-none snap-start rounded-lg overflow-hidden border-2 transition focus:outline-none ${
                           isSelected ? 'border-indigo-500 ring-1 ring-indigo-400/60' : 'border-gray-800 hover:border-gray-600'
                         }`}
@@ -4096,7 +4116,8 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     {/* Hiển thị độ dài hiệu lực của clip đang chọn */}
                     {(() => {
                       const cand = selVideo?.candidates?.[selCand];
-                      const base = cand?.clip_duration ?? clipDuration;
+                      const isStory = analysisMode === 'story' && cand?.clip_duration && cand.clip_duration !== 16;
+                      const base = isStory ? cand.clip_duration : (clipDuration || 16);
                       const eff  = Math.max(1, base + trimEnd - trimStart);
                       return (
                         <span className="text-[9px] font-mono text-indigo-300">
@@ -4105,7 +4126,12 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                       );
                     })()}
                     {(trimStart !== 0 || trimEnd !== 0) && (
-                      <button onClick={() => { setTrimStart(0); setTrimEnd(0); }}
+                      <button onClick={() => {
+                        setTrimStart(0);
+                        setTrimEnd(0);
+                        localStorage.setItem('trimStart', '0');
+                        localStorage.setItem('trimEnd', '0');
+                      }}
                         className="text-[8px] text-gray-600 hover:text-gray-400 transition ml-1">reset</button>
                     )}
                   </div>
@@ -4119,7 +4145,19 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                           <span className="text-[8px] text-gray-600 w-16 shrink-0">Clip length</span>
                           <input type="number" min="5" max="90" step="1" value={clipDuration}
                             onChange={e => {
-                              const v = Math.max(5, Math.min(90, Number(e.target.value)));
+                              const raw = e.target.value;
+                              if (raw === '') {
+                                setClipDuration('');
+                                return;
+                              }
+                              const v = Number(raw);
+                              setClipDuration(v);
+                              if (!isNaN(v) && v >= 5 && v <= 90) {
+                                localStorage.setItem('clipDuration', String(v));
+                              }
+                            }}
+                            onBlur={() => {
+                              const v = Math.max(5, Math.min(90, Number(clipDuration) || 16));
                               setClipDuration(v);
                               localStorage.setItem('clipDuration', String(v));
                             }}
@@ -4136,7 +4174,11 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     <div className="flex items-center gap-2">
                       <span className="text-[8px] text-gray-600 w-16 shrink-0">Start offset</span>
                       <input type="range" min="-30" max="30" step="1" value={trimStart}
-                        onChange={e => setTrimStart(Number(e.target.value))}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          setTrimStart(v);
+                          localStorage.setItem('trimStart', String(v));
+                        }}
                         className="flex-1 h-1 accent-indigo-500 cursor-pointer" />
                       <span className="text-[8px] font-mono text-indigo-400 w-8 text-right shrink-0">
                         {trimStart > 0 ? `+${trimStart}` : trimStart}s
@@ -4145,7 +4187,11 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     <div className="flex items-center gap-2">
                       <span className="text-[8px] text-gray-600 w-16 shrink-0">End offset</span>
                       <input type="range" min="-30" max="30" step="1" value={trimEnd}
-                        onChange={e => setTrimEnd(Number(e.target.value))}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          setTrimEnd(v);
+                          localStorage.setItem('trimEnd', String(v));
+                        }}
                         className="flex-1 h-1 accent-indigo-500 cursor-pointer" />
                       <span className="text-[8px] font-mono text-indigo-400 w-8 text-right shrink-0">
                         {trimEnd > 0 ? `+${trimEnd}` : trimEnd}s
@@ -4203,7 +4249,10 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     const startSec = parts.length === 3
                       ? parts[0] * 3600 + parts[1] * 60 + parts[2]
                       : parts[0] * 60 + (parts[1] || 0);
-                    const candDur = cand?.clip_duration ?? clipDuration;
+                    const isStory = analysisMode === 'story' && cand?.clip_duration && cand.clip_duration !== 16;
+                    const baseDur = isStory ? cand.clip_duration : (Number(clipDuration) || 16);
+                    const effDur = Math.max(1, baseDur + trimEnd - trimStart);
+                    const effStartSec = Math.max(0, startSec + trimStart);
 
                     if (selVideo?.is_youtube) {
                       const ytMatch = (selVideo.path || '').match(/(?:v=|\/|be\/|embed\/|shorts\/)([a-zA-Z0-9_\-]{11})/);
@@ -4212,8 +4261,8 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                         <div className="w-full bg-black flex items-center justify-center aspect-video" style={{ maxHeight: 220 }}>
                           {ytId ? (
                             <iframe
-                              key={`${selVideo.path}|${selCand}`}
-                              src={`https://www.youtube-nocookie.com/embed/${ytId}?start=${Math.floor(startSec)}&end=${Math.ceil(startSec + candDur)}&autoplay=1&rel=0`}
+                              key={`${selVideo.path}|${selCand}|${effStartSec}|${effDur}`}
+                              src={`https://www.youtube-nocookie.com/embed/${ytId}?start=${Math.floor(effStartSec)}&end=${Math.ceil(effStartSec + effDur)}&autoplay=1&rel=0`}
                               title="YouTube Highlight Preview"
                               className="w-full h-full border-0"
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -4226,10 +4275,10 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                       );
                     }
 
-                    const previewSrc = `${API}/clip/stream_preview?path=${encodeURIComponent(selVideo.path)}&start=${startSec}&dur=${candDur}`;
+                    const previewSrc = `${API}/clip/stream_preview?path=${encodeURIComponent(selVideo.path)}&start=${effStartSec}&dur=${effDur}`;
                     return (
                       <video
-                        key={`${selVideo.path}|${selCand}`}
+                        key={`${selVideo.path}|${selCand}|${effStartSec}|${effDur}`}
                         controls
                         autoPlay
                         preload="auto"
@@ -4249,8 +4298,10 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     {cutBusy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Scissors className="w-4 h-4" />}
                     {cutBusy ? 'Cutting…' : (() => {
                       const cand = selVideo?.candidates?.[selCand];
-                      const base = cand?.clip_duration ?? clipDuration;
-                      return `✂️  CUT SELECTED CLIP  (${base}s)`;
+                      const isStory = analysisMode === 'story' && cand?.clip_duration && cand.clip_duration !== 16;
+                      const base = isStory ? cand.clip_duration : (Number(clipDuration) || 16);
+                      const eff = Math.max(1, base + trimEnd - trimStart);
+                      return `✂️  CUT SELECTED CLIP  (${eff}s)`;
                     })()}
                   </button>
 

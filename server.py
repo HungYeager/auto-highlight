@@ -2547,9 +2547,25 @@ def add_to_edit_queue(req: AddEditRequest):
 
 class SendAllCandidatesRequest(BaseModel):
     video_path: str
+    trim_start_offset: float = 0.0
+    trim_duration: Optional[float] = None
+    mode: str = "short"
 
 
-def _cut_and_queue_video_candidates(video_path: Any, raw_dir: Path, _log: Any) -> Tuple[List[Dict[str, Any]], str]:
+class SendAllVideosRequest(BaseModel):
+    trim_start_offset: float = 0.0
+    trim_duration: Optional[float] = None
+    mode: str = "short"
+
+
+def _cut_and_queue_video_candidates(
+    video_path: Any,
+    raw_dir: Path,
+    _log: Any,
+    trim_start_offset: float = 0.0,
+    trim_duration: Optional[float] = None,
+    mode: str = "short",
+) -> Tuple[List[Dict[str, Any]], str]:
     """Helper to cut and queue all candidates for a specific video into Tab 2 edit queue using Title #1."""
     is_yt = isinstance(video_path, str) and video_path.startswith(("http://", "https://"))
     v_path = None
@@ -2595,7 +2611,14 @@ def _cut_and_queue_video_candidates(video_path: Any, raw_dir: Path, _log: Any) -
             or chosen.get("start_ts")
             or "00:00:00"
         )
-        base_dur = float(chosen.get("clip_duration") or CLIP_DURATION)
+        cand_dur = float(chosen.get("clip_duration") or CLIP_DURATION)
+        if mode == "story" and cand_dur != CLIP_DURATION:
+            base_dur = cand_dur
+        elif trim_duration and trim_duration > 0:
+            base_dur = float(trim_duration)
+        else:
+            base_dur = cand_dur
+
         start_sec = ts_to_seconds(start_ts)
 
         if vid_dur > 0 and start_sec > vid_dur:
@@ -2608,15 +2631,20 @@ def _cut_and_queue_video_candidates(video_path: Any, raw_dir: Path, _log: Any) -
                 alt_sec = int(parts[0]) * 60 + float(parts[1])
                 if alt_sec <= vid_dur:
                     start_sec = alt_sec
-            h = int(start_sec // 3600)
-            m = int((start_sec % 3600) // 60)
-            s = start_sec % 60
-            start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
+
+        if abs(trim_start_offset) > 0.01:
+            start_sec = max(0.0, start_sec + trim_start_offset)
 
         if vid_dur > 0:
+            start_sec = min(start_sec, max(0.0, vid_dur - 1.0))
             dur = min(base_dur, max(1.0, vid_dur - start_sec))
         else:
             dur = base_dur
+
+        h = int(start_sec // 3600)
+        m = int((start_sec % 3600) // 60)
+        s = start_sec % 60
+        start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
 
         dst = raw_dir / f"{stem}_clip{chosen.get('id', idx+1)}_{start_ts.replace(':', '-')}.mp4"
 
@@ -2705,7 +2733,14 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
         elif "msg" in kwargs:
             app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
 
-    added_entries, v_label = _cut_and_queue_video_candidates(req.video_path, raw_dir, _log)
+    added_entries, v_label = _cut_and_queue_video_candidates(
+        req.video_path,
+        raw_dir,
+        _log,
+        trim_start_offset=req.trim_start_offset,
+        trim_duration=req.trim_duration,
+        mode=req.mode,
+    )
     if not added_entries and not v_label:
         is_yt = isinstance(req.video_path, str) and req.video_path.startswith(("http://", "https://"))
         v_path = _safe_resolve_path(req.video_path) if not is_yt else None
@@ -2722,7 +2757,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
 
 
 @app.post("/api/candidates/send_all_videos_to_edit")
-def send_all_videos_candidates_to_edit():
+def send_all_videos_candidates_to_edit(req: Optional[SendAllVideosRequest] = None):
     """Batch cut and transfer ALL candidates across ALL videos in list into Tab 2 edit queue using Title #1."""
     out_dir = Path(app_state.get_current_output_folder())
     raw_dir = out_dir / "raw_cuts"
@@ -2751,8 +2786,19 @@ def send_all_videos_candidates_to_edit():
 
     app_state.log(f"⚡ Bắt đầu cắt tất cả cảnh của {total_videos} video trong danh sách sang Tab 2...", "info")
 
+    offset = req.trim_start_offset if req else 0.0
+    dur = req.trim_duration if req else None
+    mode = req.mode if req else "short"
+
     for v in videos_list:
-        added, v_label = _cut_and_queue_video_candidates(v, raw_dir, _log)
+        added, v_label = _cut_and_queue_video_candidates(
+            v,
+            raw_dir,
+            _log,
+            trim_start_offset=offset,
+            trim_duration=dur,
+            mode=mode,
+        )
         if added:
             all_added.extend(added)
             processed_videos += 1
@@ -3790,13 +3836,37 @@ def start_analysis(body: Dict[str, Any] = None):
     mode        = str(body.get("mode", "short"))  # "short" | "story"
     if mode not in ("short", "story"):
         mode = "short"
+    force_all    = bool(body.get("force_all", False))
+    retry_errors = bool(body.get("retry_errors", False))
+
+    def _is_video_done(v_item: Any) -> bool:
+        r = _get_video_result(v_item)
+        return r.get("status") == ST_DONE
+
+    if retry_errors:
+        targets = [v for v in app_state.video_files if _get_video_result(v).get("status") == ST_ERROR]
+    elif force_all:
+        targets = list(app_state.video_files)
+    else:
+        # Default Analyze All: ONLY analyze videos that are not done yet!
+        targets = [v for v in app_state.video_files if not _is_video_done(v)]
+
+    if not targets:
+        app_state.log("ℹ️ Tất cả video trong danh sách đã được phân tích xong.", "ok")
+        return {"status": "already_done", "total": len(app_state.video_files), "analyzed": 0}
+
+    skipped_count = len(app_state.video_files) - len(targets)
+    if skipped_count > 0:
+        app_state.log(f"🚀 Phân tích {len(targets)} video chưa phân tích (đã bỏ qua {skipped_count} video đã phân tích xong)...", "info")
+    else:
+        app_state.log(f"🚀 Bắt đầu phân tích {len(targets)} video...", "info")
 
     threading.Thread(
         target=_run_bulk_analysis_thread,
-        args=(keys, list(app_state.video_files), model, include_cta, mode),
+        args=(keys, targets, model, include_cta, mode),
         daemon=True
     ).start()
-    return {"status": "started", "total": len(app_state.video_files), "mode": mode}
+    return {"status": "started", "total": len(targets), "skipped": skipped_count, "mode": mode}
 
 @app.post("/api/analyze/stop")
 def stop_analysis():
