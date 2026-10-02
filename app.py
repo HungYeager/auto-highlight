@@ -2215,6 +2215,14 @@ def get_youtube_info(url: str, cookies_browser: Optional[str] = None, cookie_fil
         'quiet': True,
         'no_warnings': True,
         'extract_flat': True,
+        'source_address': '0.0.0.0',
+        'retries': 5,
+        'socket_timeout': 15,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'tv_embedded', 'mweb']
+            }
+        },
     }
 
     c_file = cookie_file or get_yt_cookie_file()
@@ -2357,9 +2365,15 @@ def download_youtube_section(
         'outtmpl': str(out_p),
         'quiet': True,
         'no_warnings': True,
-        'retries': 5,
-        'fragment_retries': 5,
+        'retries': 10,
+        'fragment_retries': 10,
         'source_address': '0.0.0.0',  # Force IPv4 against Windows IPv6 connection reset drops
+        'socket_timeout': 30,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'tv_embedded', 'mweb']
+            }
+        },
     }
 
     try:

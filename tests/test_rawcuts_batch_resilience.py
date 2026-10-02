@@ -120,6 +120,45 @@ class TestRawCutsBatchResilience(unittest.TestCase):
             self.assertEqual(app_state.edit_queue[0]["title"], "First Title Clip 1")
             self.assertEqual(app_state.edit_queue[1]["title"], "First Title Clip 2")
 
+    def test_send_all_videos_to_edit(self):
+        """Test /api/candidates/send_all_videos_to_edit cuts candidates across multiple videos."""
+        vid1 = Path(self.temp_dir) / "vid1.mp4"
+        vid2 = Path(self.temp_dir) / "vid2.mp4"
+        vid1.write_bytes(b"vid1_bytes")
+        vid2.write_bytes(b"vid2_bytes")
+
+        with STATE_LOCK:
+            app_state.video_files = [vid1, vid2]
+            app_state.video_results = {
+                str(vid1): {
+                    "status": "done",
+                    "candidates": [
+                        {"id": 1, "start_time": "00:01:00", "clip_duration": 16, "suggested_titles": ["Vid 1 Title A"]},
+                    ]
+                },
+                str(vid2): {
+                    "status": "done",
+                    "candidates": [
+                        {"id": 1, "start_time": "00:02:00", "clip_duration": 16, "suggested_titles": ["Vid 2 Title A"]},
+                        {"id": 2, "start_time": "00:03:00", "clip_duration": 16, "suggested_titles": ["Vid 2 Title B"]},
+                    ]
+                }
+            }
+            app_state.edit_queue = []
+
+        with patch("server.get_video_duration", return_value=600.0), \
+             patch("server.cut_clip_exact"):
+            resp = self.client.post("/api/candidates/send_all_videos_to_edit")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["added_count"], 3)
+            self.assertEqual(data["processed_videos"], 2)
+            self.assertEqual(len(app_state.edit_queue), 3)
+            self.assertEqual(app_state.edit_queue[0]["title"], "Vid 1 Title A")
+            self.assertEqual(app_state.edit_queue[1]["title"], "Vid 2 Title A")
+            self.assertEqual(app_state.edit_queue[2]["title"], "Vid 2 Title B")
+
     def test_safe_resolve_cross_machine_fallback(self):
         """Test _safe_resolve_path finds existing file by filename when absolute path has wrong drive."""
         real_file = self.out_dir / "raw_cuts" / "my_clip_01.mp4"

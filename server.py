@@ -2531,55 +2531,38 @@ def add_to_edit_queue(req: AddEditRequest):
 class SendAllCandidatesRequest(BaseModel):
     video_path: str
 
-@app.post("/api/candidates/send_all_to_edit")
-def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
-    """Batch cut and transfer ALL candidates for a video into Tab 2 edit queue using Title #1."""
-    is_yt = isinstance(req.video_path, str) and req.video_path.startswith(("http://", "https://"))
+
+def _cut_and_queue_video_candidates(video_path: Any, raw_dir: Path, _log: Any) -> Tuple[List[Dict[str, Any]], str]:
+    """Helper to cut and queue all candidates for a specific video into Tab 2 edit queue using Title #1."""
+    is_yt = isinstance(video_path, str) and video_path.startswith(("http://", "https://"))
     v_path = None
     if not is_yt:
-        v_path = _safe_resolve_path(req.video_path)
+        v_path = _safe_resolve_path(video_path)
         if not v_path or not v_path.exists():
-            v_name = Path(req.video_path).name
+            v_name = Path(video_path).name
             for vf in app_state.video_files:
                 if vf.name == v_name and vf.exists():
                     v_path = vf
                     break
         if not v_path or not v_path.exists():
-            raise HTTPException(status_code=404, detail=f"Source video not found: {req.video_path}")
+            return [], ""
 
-    status_info = _get_video_result(req.video_path if is_yt else v_path)
+    status_info = _get_video_result(video_path if is_yt else v_path)
     candidates = status_info.get("candidates", [])
     if not candidates:
-        raise HTTPException(status_code=400, detail="Video chưa có candidates phân tích xong.")
-
-    out_dir = Path(app_state.get_current_output_folder())
-    raw_dir = out_dir / "raw_cuts"
-    try:
-        raw_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        app_state.log(f"⚠️ Không tạo được raw_cuts folder ({raw_dir}): {e} — dùng output_clips", "warn")
-        raw_dir = Path("output_clips") / "raw_cuts"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-
-    def _log(*args, **kwargs):
-        if len(args) == 1:
-            app_state.log(str(args[0]), "info")
-        elif len(args) >= 2:
-            app_state.log(str(args[1]), str(args[0]))
-        elif "msg" in kwargs:
-            app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
+        return [], ""
 
     if is_yt:
-        yt_title = getattr(app_state, "yt_metadata", {}).get(req.video_path, {}).get("title") or "yt_clip"
+        yt_title = getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("title") or "yt_clip"
         stem = sanitize(yt_title)[:30]
-        vid_dur = float(getattr(app_state, "yt_metadata", {}).get(req.video_path, {}).get("duration", 0.0) or 0.0)
+        vid_dur = float(getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("duration", 0.0) or 0.0)
         if vid_dur <= 0:
             try:
-                info = get_youtube_info(req.video_path, cookies_browser=app_state.config.get("youtube_cookie_browser", None))
+                info = get_youtube_info(video_path, cookies_browser=app_state.config.get("youtube_cookie_browser", None))
                 if info:
                     if not hasattr(app_state, "yt_metadata"):
                         app_state.yt_metadata = {}
-                    app_state.yt_metadata[req.video_path] = info
+                    app_state.yt_metadata[video_path] = info
                     vid_dur = float(info.get("duration", 0.0) or 0.0)
             except Exception:
                 pass
@@ -2622,7 +2605,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
 
         # Cut / download clip if not already exists on disk with valid size
         if not dst.exists() or dst.stat().st_size < 1000:
-            app_state.log(f"✂️  [Tất cả] Cắt cảnh #{idx+1} ({start_ts}) → {dst.name}", "info")
+            app_state.log(f"✂️  [Cắt cảnh] #{idx+1} ({start_ts}) → {dst.name}", "info")
             if is_yt:
                 end_sec = start_sec + dur
                 if vid_dur > 0:
@@ -2634,7 +2617,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
                 cookie_browser = app_state.config.get("youtube_cookie_browser", None)
                 try:
                     download_youtube_section(
-                        url=req.video_path,
+                        url=video_path,
                         start_time=start_ts,
                         end_time=end_ts,
                         output_path=str(dst),
@@ -2660,7 +2643,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
             "path":      str(dst),
             "name":      dst.name,
             "title":     title1,
-            "source":    req.video_path if is_yt else v_path.name,
+            "source":    video_path if is_yt else v_path.name,
             "start_time": start_ts,
             "start_sec":  start_sec,
             "duration":   dur,
@@ -2681,13 +2664,91 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
             app_state.edit_queue.append(entry)
             added_entries.append(entry)
 
+    v_label = stem if is_yt else v_path.name
+    return added_entries, v_label
+
+
+@app.post("/api/candidates/send_all_to_edit")
+def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
+    """Batch cut and transfer ALL candidates for a video into Tab 2 edit queue using Title #1."""
+    out_dir = Path(app_state.get_current_output_folder())
+    raw_dir = out_dir / "raw_cuts"
+    try:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        app_state.log(f"⚠️ Không tạo được raw_cuts folder ({raw_dir}): {e} — dùng output_clips", "warn")
+        raw_dir = Path("output_clips") / "raw_cuts"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log(*args, **kwargs):
+        if len(args) == 1:
+            app_state.log(str(args[0]), "info")
+        elif len(args) >= 2:
+            app_state.log(str(args[1]), str(args[0]))
+        elif "msg" in kwargs:
+            app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
+
+    added_entries, v_label = _cut_and_queue_video_candidates(req.video_path, raw_dir, _log)
+    if not added_entries and not v_label:
+        is_yt = isinstance(req.video_path, str) and req.video_path.startswith(("http://", "https://"))
+        v_path = _safe_resolve_path(req.video_path) if not is_yt else None
+        if not is_yt and (not v_path or not v_path.exists()):
+            raise HTTPException(status_code=404, detail=f"Source video not found: {req.video_path}")
+        raise HTTPException(status_code=400, detail="Video chưa có candidates phân tích xong.")
+
     with STATE_LOCK:
         app_state.save_session()
 
     _sse_bus.push("queue_changed", {"action": "batch_add", "count": len(added_entries)})
-    v_label = stem if is_yt else v_path.name
     app_state.log(f"⚡ Đã chuyển {len(added_entries)} cảnh của '{v_label}' sang Tab 2 (Title #1)", "ok")
     return {"status": "ok", "added_count": len(added_entries), "entries": added_entries}
+
+
+@app.post("/api/candidates/send_all_videos_to_edit")
+def send_all_videos_candidates_to_edit():
+    """Batch cut and transfer ALL candidates across ALL videos in list into Tab 2 edit queue using Title #1."""
+    out_dir = Path(app_state.get_current_output_folder())
+    raw_dir = out_dir / "raw_cuts"
+    try:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        app_state.log(f"⚠️ Không tạo được raw_cuts folder ({raw_dir}): {e} — dùng output_clips", "warn")
+        raw_dir = Path("output_clips") / "raw_cuts"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log(*args, **kwargs):
+        if len(args) == 1:
+            app_state.log(str(args[0]), "info")
+        elif len(args) >= 2:
+            app_state.log(str(args[1]), str(args[0]))
+        elif "msg" in kwargs:
+            app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
+
+    all_added: List[Dict[str, Any]] = []
+    processed_videos = 0
+    videos_list = list(app_state.video_files)
+    total_videos = len(videos_list)
+
+    if total_videos == 0:
+        raise HTTPException(status_code=400, detail="Danh sách video hiện đang trống.")
+
+    app_state.log(f"⚡ Bắt đầu cắt tất cả cảnh của {total_videos} video trong danh sách sang Tab 2...", "info")
+
+    for v in videos_list:
+        added, v_label = _cut_and_queue_video_candidates(v, raw_dir, _log)
+        if added:
+            all_added.extend(added)
+            processed_videos += 1
+
+    if not all_added:
+        raise HTTPException(status_code=400, detail="Chưa có video nào có cảnh (candidates) được phân tích xong.")
+
+    with STATE_LOCK:
+        app_state.save_session()
+
+    _sse_bus.push("queue_changed", {"action": "batch_add", "count": len(all_added)})
+    app_state.log(f"✅ Hoàn tất cắt tất cả video: Đã chuyển {len(all_added)} cảnh của {processed_videos}/{total_videos} video sang Tab 2!", "ok")
+    return {"status": "ok", "added_count": len(all_added), "entries": all_added, "processed_videos": processed_videos}
 
 class UpdateEditRequest(BaseModel):
     index: int

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Film, Download, Trash2, Plus, Sparkles, CheckCircle2, AlertCircle,
   RefreshCw, Terminal, FolderOpen, Scissors, Square, Settings,
@@ -429,6 +429,9 @@ function App() {
   const [tab, setTab]         = useState('analyze');
   const [config, setConfig]   = useState({ api_keys: [''], output_folder: '', model_name: 'gemini-3.5-flash-lite', analysis_parallel: 3, export_threads: 2, export_crf: 20, export_preset: 'fast', export_encoder: 'libx264', export_resolution: '1080x1920', export_fps: null, box_bg_color_hex: '#222222' });
   const [videos, setVideos]   = useState([]);           // ── all videos in queue ────────────────────────────────────────────────────────
+  const totalAllCandidates = useMemo(() => {
+    return (videos || []).reduce((acc, v) => acc + (v.candidates?.length || 0), 0);
+  }, [videos]);
 const [editQueue, setEditQueue] = useState([]);       // Tab 2 queue: {clip_path, title, suggested_titles, state}
   const [selVideo, setSelVideo]   = useState(null);     // ── selected video in Tab 1
 const [selCand, setSelCand]     = useState(0);        // ── selected candidate index
@@ -449,6 +452,7 @@ const [fonts, setFonts]     = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [cutBusy, setCutBusy] = useState(false);
   const [sendAllBusy, setSendAllBusy] = useState(false);
+  const [sendAllVideosBusy, setSendAllVideosBusy] = useState(false);
   const [exportProg, setExportProg] = useState({ status: 'idle', completed: 0, total: 0, current: '' });
   const [batches, setBatches]                     = useState([]);
   const [activeBatchId, setActiveBatchId]         = useState('default');
@@ -3237,6 +3241,49 @@ const addFiles = async () => {
     }
   };
 
+  // ── SEND ALL CANDIDATES ACROSS ALL VIDEOS TO TAB 2 (TITLE #1) ──
+  const sendAllVideosCandidatesToEdit = async () => {
+    if (totalAllCandidates === 0) {
+      alert('Chưa có video nào trong danh sách có cảnh (candidates) được AI phân tích.');
+      return;
+    }
+    const confirmed = window.confirm(
+      `⚡ CẮT HÀNG LOẠT:\nBạn có chắc muốn tự động cắt toàn bộ ${totalAllCandidates} cảnh của TẤT CẢ các video trong danh sách sang Tab 2 (sử dụng Title #1)?`
+    );
+    if (!confirmed) return;
+
+    setSendAllVideosBusy(true);
+    try {
+      const r = await post('/candidates/send_all_videos_to_edit', {});
+      const d = await r.json();
+      if (r.ok) {
+        if (d.entries && Array.isArray(d.entries)) {
+          setEditQueue(prev => {
+            const newMap = new Map();
+            prev.forEach(item => newMap.set(item.clip_path || item.path, item));
+            d.entries.forEach(entry => newMap.set(entry.clip_path || entry.path, entry));
+            return Array.from(newMap.values());
+          });
+        }
+        if (d.added_count > 0) {
+          setTimeout(() => {
+            setSelEditIdx(0);
+            setTab('edit');
+          }, 50);
+          alert(`⚡ Thành công! Đã cắt & chuyển ${d.added_count} cảnh của ${d.processed_videos || ''} video vào Tab 2!`);
+        } else {
+          alert('Không có cảnh nào được thêm vào Tab 2. Vui lòng kiểm tra lại log.');
+        }
+      } else {
+        alert(d.detail || 'Không thể cắt tất cả cảnh của các video');
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSendAllVideosBusy(false);
+    }
+  };
+
   // ── SEND TO ──
   // EDIT: push cut clip + selected title into edit queue (Tab 2)
   const sendToEdit = async () => {
@@ -3935,8 +3982,22 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
 
         {/* ── VIDEO QUEUE table ── */}
         <div className="shrink-0 border-b border-gray-800/50 bg-gray-900/20">
-          <div className="px-3 py-1 border-b border-gray-800/40 text-[9px] font-bold text-gray-500 uppercase tracking-widest flex gap-4">
-            <span className="flex-1">Video File</span><span className="w-28 text-right">Status</span>
+          <div className="px-3 py-1 border-b border-gray-800/40 text-[9px] font-bold text-gray-500 uppercase tracking-widest flex items-center justify-between gap-4">
+            <span className="flex-1">Video File</span>
+            <div className="flex items-center gap-2">
+              {totalAllCandidates > 0 && (
+                <button
+                  onClick={sendAllVideosCandidatesToEdit}
+                  disabled={sendAllVideosBusy}
+                  className="px-2 py-0.5 rounded bg-emerald-800/60 hover:bg-emerald-700 text-emerald-200 text-[8.5px] font-bold flex items-center gap-1 transition shadow-sm"
+                  title="Cắt tất cả candidates của tất cả video trong danh sách sang Tab 2"
+                >
+                  {sendAllVideosBusy ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <Scissors className="w-2.5 h-2.5 text-amber-300" />}
+                  Cắt hết tất cả cảnh ({totalAllCandidates})
+                </button>
+              )}
+              <span className="w-28 text-right">Status</span>
+            </div>
           </div>
           <div className="max-h-32 overflow-y-auto">
             {videos.length === 0
@@ -4212,10 +4273,18 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                   )}
 
                   <button onClick={sendAllCandidatesToEdit}
-                    disabled={sendAllBusy || !selVideo?.candidates?.length}
+                    disabled={sendAllBusy || sendAllVideosBusy || !selVideo?.candidates?.length}
                     className="w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-600 hover:to-indigo-600 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-900/30 transition">
                     {sendAllBusy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-amber-300" />}
-                    {sendAllBusy ? 'Đang cắt & chuyển tất cả cảnh…' : `⚡ CHUYỂN TẤT CẢ CẢNH VÀO TAB 2 (TITLE #1) (${selVideo?.candidates?.length || 0})`}
+                    {sendAllBusy ? 'Đang cắt & chuyển cảnh video này…' : `⚡ CHUYỂN TẤT CẢ CẢNH VIDEO NÀY VÀO TAB 2 (${selVideo?.candidates?.length || 0})`}
+                  </button>
+
+                  <button onClick={sendAllVideosCandidatesToEdit}
+                    disabled={sendAllVideosBusy || sendAllBusy || totalAllCandidates === 0}
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 transition"
+                    title="Cắt toàn bộ candidate của tất cả các video có trong danh sách">
+                    {sendAllVideosBusy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Scissors className="w-4 h-4 text-emerald-300" />}
+                    {sendAllVideosBusy ? 'Đang cắt toàn bộ các video trong DS…' : `🎬 CẮT HẾT TẤT CẢ CANDIDATE CỦA CÁC VIDEO (${totalAllCandidates})`}
                   </button>
                 </div>
 
@@ -7695,6 +7764,15 @@ return (
                     className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs flex items-center gap-1.5 transition">
                     <Sparkles className="w-3 h-3" />{analysisMode === 'story' ? 'STORY ANALYZE' : 'ANALYZE ALL'}
                   </button>
+                  {totalAllCandidates > 0 && (
+                    <button onClick={sendAllVideosCandidatesToEdit}
+                      disabled={sendAllVideosBusy || isAnalyzing}
+                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950/40 transition"
+                      title="Cắt toàn bộ candidate của tất cả các video có trong danh sách sang Tab 2">
+                      {sendAllVideosBusy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3 text-amber-300" />}
+                      {sendAllVideosBusy ? 'Đang cắt tất cả…' : `CẮT TẤT CẢ VIDEO (${totalAllCandidates})`}
+                    </button>
+                  )}
                 </>
           )}
           {videos.some(v => v.status === 'error') && (
