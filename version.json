@@ -1,6 +1,6 @@
 {
-  "version": "2.9.3",
-  "release_date": "2026-10-02",
-  "changelog": "- Sửa lỗi Clip Trimmer nhập tay Clip Length (không còn bị cứng 16 giây)\n- Giữ nguyên thiết lập Trimmer (độ dài, start/end offset) khi chuyển đổi giữa các video và các candidate\n- Sửa logic 'Phân tích tất cả': chỉ phân tích các video chưa phân tích, tự động bỏ qua video đã hoàn thành\n- Hỗ trợ cắt hàng loạt (batch cuts) tôn trọng đúng độ dài và offset đã chỉnh",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.3/OpenCutStudio_v2.9.3.zip"
+  "version": "2.9.4",
+  "release_date": "2026-10-03",
+  "changelog": "- Thêm chỉ báo (mark) nhận diện video đã gắn sticker / ảnh / video layer trong Queue ở Tab 2\n- Hiển thị viền hồng chỉ báo và badge số lượng sticker trực quan ngay trên mỗi dòng clip trong Queue\n- Thống kê tổng số video đã có sticker ngay trên thanh tiêu đề Queue\n- Sửa lỗi Clip Trimmer nhập tay Clip Length (không còn bị cứng 16 giây)\n- Giữ nguyên thiết lập Trimmer (độ dài, start/end offset) khi chuyển đổi giữa các video và các candidate\n- Sửa logic 'Phân tích tất cả': chỉ phân tích các video chưa phân tích, tự động bỏ qua video đã hoàn thành\n- Hỗ trợ cắt hàng loạt (batch cuts) tôn trọng đúng độ dài và offset đã chỉnh",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.4/OpenCutStudio_v2.9.4.zip"
 }
