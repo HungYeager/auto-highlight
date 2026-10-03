@@ -7537,9 +7537,28 @@ const stTime = ovl.start_time ?? 0;
           </div>
 
           <div className="px-3 py-2 border-b border-gray-800/50 flex items-center justify-between shrink-0">
-            <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-1">
-              <Film className="w-2.5 h-2.5 text-emerald-400" />Queue ({editQueue.length})
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-1">
+                <Film className="w-2.5 h-2.5 text-emerald-400" />Queue ({editQueue.length})
+              </span>
+              {(() => {
+                const stickeredCount = editQueue.filter(c => {
+                  const ovls = (c.state?.overlays || c.overlays || []);
+                  return ovls.some(o => o && (o.enabled ?? true));
+                }).length;
+                if (stickeredCount > 0) {
+                  return (
+                    <span
+                      className="text-[8px] font-bold text-pink-400 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-pink-950/60 border border-pink-500/30 shadow-xs"
+                      title={`${stickeredCount}/${editQueue.length} video trong queue đã gắn sticker / lớp phủ`}>
+                      <Layers className="w-2 h-2" />
+                      <span>{stickeredCount}</span>
+                    </span>
+                  );
+                }
+                return null;
+              })()}
+            </div>
             <div className="flex gap-1 items-center">
               <button onClick={() => post('/dialog/pick_edit_files')}
                 className="px-1.5 py-0.5 bg-indigo-900/60 hover:bg-indigo-700/80 border border-indigo-700/50 rounded text-[8px] font-bold text-indigo-200 transition flex items-center gap-0.5"
@@ -7631,6 +7650,13 @@ const stTime = ovl.start_time ?? 0;
                   renderItem={(clip, idx) => {
                     const isActive   = selEditIdx === idx;
                     const isMultiSel = selEditIdxs.has(idx);
+
+                    // Overlays / stickers detection
+                    const ovlList = (isActive ? (editState?.overlays || clip.state?.overlays) : clip.state?.overlays) || clip.overlays || [];
+                    const activeOvls = ovlList.filter(o => o && (o.enabled ?? true));
+                    const stickerCount = activeOvls.length;
+                    const totalOvls = ovlList.length;
+
                     return (
                       <div
                         onClick={(e) => {
@@ -7647,12 +7673,33 @@ const stTime = ovl.start_time ?? 0;
                           }
                         }}
                         style={{ height: 54 }}
-                        className={`px-3 py-2 border-b border-gray-800/30 cursor-pointer transition flex items-start gap-1.5 ${
-                          isActive ? 'bg-indigo-600/20' : isMultiSel ? 'bg-indigo-900/25 border-l-2 border-l-indigo-500' : 'hover:bg-gray-800/40'
+                        className={`px-3 py-1.5 border-b border-gray-800/30 cursor-pointer transition flex items-center gap-1.5 ${
+                          isActive ? 'bg-indigo-600/20' : isMultiSel ? 'bg-indigo-900/25' : 'hover:bg-gray-800/40'
+                        } ${
+                          isMultiSel ? 'border-l-2 border-l-indigo-500' : stickerCount > 0 ? 'border-l-2 border-l-pink-500' : 'border-l-2 border-l-transparent'
                         }`}>
-                        <div className="flex-1 overflow-hidden">
+                        <div className="flex-1 overflow-hidden min-w-0">
                           <p className="text-[10px] font-medium text-gray-100 truncate">{clip.title || '—'}</p>
-                          <p className="text-[9px] text-gray-600 truncate">{(clip.clip_path || clip.path || '').split(/[\\\/]/).pop()}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <p className="text-[9px] text-gray-500 truncate flex-1">{(clip.clip_path || clip.path || '').split(/[\\\/]/).pop()}</p>
+                            {stickerCount > 0 ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-pink-950/80 text-pink-300 border border-pink-500/40 shrink-0 shadow-xs"
+                                title={`Đã gắn ${stickerCount} sticker / layer ảnh-video (Lớp phủ đa tầng)`}
+                              >
+                                <Layers className="w-2.5 h-2.5 text-pink-400 shrink-0" />
+                                <span>{stickerCount} {stickerCount === 1 ? 'sticker' : 'stickers'}</span>
+                              </span>
+                            ) : totalOvls > 0 ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-medium bg-gray-900 text-gray-500 border border-gray-800 shrink-0"
+                                title={`${totalOvls} sticker đang tắt (disabled)`}
+                              >
+                                <Layers className="w-2.5 h-2.5 text-gray-600 shrink-0" />
+                                <span>{totalOvls} tắt</span>
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                         <div className="flex items-center gap-0.5 shrink-0">
                           {clip.title_error ? (
