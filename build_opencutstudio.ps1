@@ -177,6 +177,12 @@ if (Test-Path "fonts") {
     Write-Host "  + fonts\"
 }
 
+# Copy edit_presets directory
+if (Test-Path "edit_presets") {
+    Copy-Item "edit_presets" "$RELEASE\edit_presets" -Recurse -Force
+    Write-Host "  + edit_presets\"
+}
+
 # Create runtime directories and copy models if present
 New-Item "$RELEASE\overlay_assets\cutouts" -ItemType Directory -Force | Out-Null
 New-Item "$RELEASE\overlay_assets\models"  -ItemType Directory -Force | Out-Null
