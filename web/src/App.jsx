@@ -6,7 +6,7 @@ import {
   FlipHorizontal, FlipVertical, Image, Move, MessageSquare, Key,
   ChevronRight, Type, Layers, Palette, Copy, Eye, ChevronDown, Send, RotateCw,
   Volume2, VolumeX, Music, Crop, Mic, Loader2, Youtube, ExternalLink, Link2, X,
-  Play, Clipboard
+  Play, Clipboard, Search
 } from 'lucide-react';
 
 
@@ -495,6 +495,15 @@ const [fonts, setFonts]     = useState([]);
   const [ytBatchTab, setYtBatchTab]               = useState('single'); // 'single' | 'batch'
   const [ytBatchText, setYtBatchText]             = useState('');
   const [ytBatchBusy, setYtBatchBusy]             = useState(false);
+  const [ytDupCheck, setYtDupCheck]               = useState(null); // { valid, exists, record, next_code }
+  const [ytHistoryList, setYtHistoryList]         = useState([]);
+  const [ytHistorySearch, setYtHistorySearch]     = useState('');
+  const [ytHistoryLoading, setYtHistoryLoading]   = useState(false);
+  const [ytCopiedCode, setYtCopiedCode]           = useState('');
+  const [ytCodePrefix, setYtCodePrefix]           = useState(() => localStorage.getItem('ytCodePrefix') || 'COP');
+  const [ytDownloadErrors, setYtDownloadErrors]   = useState({}); // { [candIdx]: string }
+  const [redownloadingMap, setRedownloadingMap]   = useState({}); // { [clipPath]: boolean }
+  const [isRedownloadingAll, setIsRedownloadingAll] = useState(false);
   const ytCookieFileInputRef                      = useRef(null);
 
   // ── Preview ──
@@ -1184,6 +1193,9 @@ useEffect(() => {
           if (ocrR && ocrR.device) setOcrInfo(ocrR);
         } catch {}
         setConfig(p => ({ ...p, ...cfgR }));
+        if (cfgR && cfgR.youtube_code_prefix) {
+          setYtCodePrefix(cfgR.youtube_code_prefix);
+        }
         setFonts(fontsR.fonts || []);
         setEncoders(encR.encoders || ['libx264']);
   // ── Auto-apply GPU encoder if server detected one and user ──
@@ -1372,11 +1384,13 @@ Rules:
       const serverClips = eqR.clips || [];
       setEditQueue(prev => {
         if (!editQueueInited.current) { editQueueInited.current = true; return serverClips; }
-        const prevPaths   = new Set(prev.map(c => c.clip_path || c.path));
-        const serverPaths = new Set(serverClips.map(c => c.clip_path || c.path));
+        const serverMap = new Map(serverClips.map(c => [c.clip_path || c.path, c]));
+        const merged = prev
+          .filter(c => serverMap.has(c.clip_path || c.path))
+          .map(c => ({ ...c, ...serverMap.get(c.clip_path || c.path) }));
+        const prevPaths = new Set(prev.map(c => c.clip_path || c.path));
         const added = serverClips.filter(c => !prevPaths.has(c.clip_path || c.path));
-        const kept  = prev.filter(c => serverPaths.has(c.clip_path || c.path));
-        return added.length || kept.length !== prev.length ? [...kept, ...added] : prev;
+        return [...merged, ...added];
       });
     } catch {}
   }, []);
@@ -2273,6 +2287,13 @@ const addFiles = async () => {
   const stopAnalysis = () => post('/analyze/stop', {});
   const stopExport   = () => post('/export/stop', {});
   // ── YouTube Direct Visual Analysis Handlers ──
+  const handleUpdatePrefix = (val) => {
+    const clean = (val || '').toUpperCase().replace(/[^A-Z0-9_\-]/g, '').slice(0, 8);
+    setYtCodePrefix(clean);
+    localStorage.setItem('ytCodePrefix', clean);
+    updateCfg({ youtube_code_prefix: clean || 'COP' });
+  };
+
   const handleAnalyzeYouTube = async () => {
     const url = ytUrl.trim();
     if (!url) {
@@ -2287,7 +2308,7 @@ const addFiles = async () => {
     setYtDownloadedSet(new Set());
 
     try {
-      const res = await post('/youtube/analyze', { url, mode: ytMode });
+      const res = await post('/youtube/analyze', { url, mode: ytMode, prefix: ytCodePrefix || 'COP' });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ detail: 'Phân tích thất bại' }));
         throw new Error(errData.detail || 'Phân tích thất bại');
@@ -2425,6 +2446,61 @@ const addFiles = async () => {
     }
   };
 
+  // ── YouTube History & Lookup Handlers ──
+  const fetchYtHistory = useCallback(async (query = '') => {
+    setYtHistoryLoading(true);
+    try {
+      if (query && query.trim()) {
+        const res = await post('/youtube/lookup', { query: query.trim() });
+        if (res.ok) {
+          const data = await res.json();
+          setYtHistoryList(data.results || []);
+        }
+      } else {
+        const res = await fetch(`${API}/youtube/history?limit=100`).then(r => r.json());
+        setYtHistoryList(res.history || []);
+      }
+    } catch (e) {
+      console.error('Fetch YT history error:', e);
+    } finally {
+      setYtHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showYtModal && ytBatchTab === 'history') {
+      fetchYtHistory(ytHistorySearch);
+    }
+  }, [showYtModal, ytBatchTab, fetchYtHistory]);
+
+  useEffect(() => {
+    if (ytBatchTab === 'history') {
+      const timer = setTimeout(() => {
+        fetchYtHistory(ytHistorySearch);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [ytHistorySearch, ytBatchTab, fetchYtHistory]);
+
+  // Real-time duplicate check when user enters a single YouTube URL
+  useEffect(() => {
+    const trimmed = (ytUrl || '').trim();
+    if (!trimmed || trimmed.length < 8) {
+      setYtDupCheck(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await post('/youtube/check_url', { url: trimmed, prefix: ytCodePrefix || 'COP' });
+        if (res.ok) {
+          const data = await res.json();
+          setYtDupCheck(data);
+        }
+      } catch (err) {}
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [ytUrl, ytCodePrefix]);
+
   const parseYtUrls = (text) => {
     if (!text) return [];
     const ytRegex = /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[a-zA-Z0-9_\-]+[^\s]*/gi;
@@ -2444,6 +2520,7 @@ const addFiles = async () => {
         urls,
         analyze_now: analyzeNow,
         mode: ytMode,
+        prefix: ytCodePrefix || 'COP',
       });
       if (res.ok) {
         const data = await res.json();
@@ -2495,6 +2572,12 @@ const addFiles = async () => {
       });
     }, 350);
 
+    setYtDownloadErrors(prev => {
+      const copy = { ...prev };
+      delete copy[idx];
+      return copy;
+    });
+
     try {
       const res = await post('/youtube/download_to_studio', {
         url: ytUrl.trim(),
@@ -2503,6 +2586,7 @@ const addFiles = async () => {
         title: cand.title || '',
         suggested_titles: cand.suggested_titles || [],
         target: 'edit',
+        prefix: ytCodePrefix || 'COP',
       });
       clearInterval(progressTimer);
 
@@ -2529,9 +2613,12 @@ const addFiles = async () => {
     } catch (err) {
       clearInterval(progressTimer);
       const msg = err.message || '';
+      setYtDownloadErrors(prev => ({ ...prev, [idx]: msg }));
       if (msg.includes('Sign in to confirm') || msg.includes('cookies.txt') || msg.toLowerCase().includes('bot') || msg.toLowerCase().includes('xác minh')) {
         setShowCookieGuide(true);
         alert(`⚠️ Video này bị YouTube chặn hoặc yêu cầu đăng nhập (Sign in to confirm you're not a bot).\n\nVui lòng nạp file cookies.txt theo hướng dẫn màu vàng bên dưới để tải không bị chặn!`);
+      } else if (msg.includes('LỖI MẠNG') || msg.toLowerCase().includes('mất kết nối') || msg.toLowerCase().includes('timed out') || msg.toLowerCase().includes('connection')) {
+        alert(`📶 MẤT KẾT NỐI MẠNG HOẶC MẠNG BỊ RỚT:\n\n${msg}\n\nVui lòng kiểm tra lại mạng Internet/WiFi rồi bấm nút "Thử lại" ngay tại thẻ clip đó.`);
       } else {
         alert(`Lỗi tải đoạn clip: ${msg}`);
       }
@@ -2584,6 +2671,55 @@ const addFiles = async () => {
     }
     await Promise.all(workers);
     setYtDownloadAllBusy(false);
+  };
+
+  const handleRedownloadClip = async (clip, idx) => {
+    const cp = clip.clip_path || clip.path;
+    if (!cp || redownloadingMap[cp]) return;
+    setRedownloadingMap(prev => ({ ...prev, [cp]: true }));
+    try {
+      const res = await post('/edit_queue/redownload', { clip_path: cp });
+      if (res.ok) {
+        await fetchQueue();
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Lỗi tải lại clip' }));
+        alert(`❌ Lỗi tải lại clip:\n${err.detail}`);
+      }
+    } catch (e) {
+      alert(`❌ Lỗi kết nối máy chủ: ${e.message}`);
+    } finally {
+      setRedownloadingMap(prev => {
+        const copy = { ...prev };
+        delete copy[cp];
+        return copy;
+      });
+    }
+  };
+
+  const redownloadAllFailedClips = async () => {
+    if (isRedownloadingAll) return;
+    setIsRedownloadingAll(true);
+    try {
+      const res = await post('/edit_queue/redownload_all_failed', {});
+      if (res.ok) {
+        const data = await res.json();
+        await fetchQueue();
+        if (data.fixed_count > 0 && data.failed_count === 0) {
+          alert(`✅ Đã tải lại thành công toàn bộ ${data.fixed_count} clip bị lỗi!`);
+        } else if (data.failed_count > 0) {
+          alert(`⚠️ Đã tải lại ${data.fixed_count} clip thành công, nhưng còn ${data.failed_count} clip lỗi:\n${(data.errors || []).join('\n')}`);
+        } else {
+          alert(data.message || 'Hoàn tất kiểm tra.');
+        }
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Lỗi tải lại hàng loạt' }));
+        alert(`❌ Lỗi: ${err.detail}`);
+      }
+    } catch (e) {
+      alert(`❌ Lỗi kết nối: ${e.message}`);
+    } finally {
+      setIsRedownloadingAll(false);
+    }
   };
 
   const renderYouTubeModal = () => {
@@ -2729,7 +2865,7 @@ const addFiles = async () => {
               </div>
             )}
 
-            {/* Sub Navigation: Single vs Batch */}
+            {/* Sub Navigation: Single vs Batch vs History/Lookup */}
             <div className="flex border-b border-gray-800 bg-black/30 rounded-xl p-1 gap-1">
               <button
                 type="button"
@@ -2741,7 +2877,7 @@ const addFiles = async () => {
                 }`}
               >
                 <Youtube className="w-3.5 h-3.5 text-red-500" />
-                <span>Phân Tích 1 Video Nhanh</span>
+                <span>Phân Tích 1 Video</span>
               </button>
               <button
                 type="button"
@@ -2753,8 +2889,22 @@ const addFiles = async () => {
                 }`}
               >
                 <Layers className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Nhập List YouTube Hàng Loạt (Như Local)</span>
-                <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-indigo-600/40 text-indigo-300 font-semibold">Mới</span>
+                <span>Nhập List Hàng Loạt</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setYtBatchTab('history');
+                  fetchYtHistory('');
+                }}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                  ytBatchTab === 'history'
+                    ? 'bg-purple-950/70 text-white border border-purple-800/60 shadow-sm'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                <Search className="w-3.5 h-3.5 text-purple-400" />
+                <span>🏷️ Lịch Sử &amp; Tra Cứu Mã</span>
               </button>
             </div>
 
@@ -2766,23 +2916,37 @@ const addFiles = async () => {
                     <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
                       <span>Dán danh sách link YouTube (Mỗi dòng 1 link hoặc cách nhau bằng dấu phẩy)</span>
                     </label>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          const text = await navigator.clipboard.readText();
-                          if (text) {
-                            setYtBatchText(prev => prev ? `${prev}\n${text}` : text);
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-1.5 bg-black/40 border border-gray-700/80 px-2 py-0.5 rounded-lg">
+                        <span className="text-[10px] text-gray-400 font-medium">Tiền tố mã:</span>
+                        <input
+                          type="text"
+                          value={ytCodePrefix}
+                          onChange={e => handleUpdatePrefix(e.target.value)}
+                          placeholder="COP"
+                          maxLength={8}
+                          className="w-14 bg-black/60 border border-gray-600 rounded px-1.5 py-0.5 text-center font-mono font-bold text-indigo-300 text-[11px] uppercase focus:outline-none focus:border-indigo-400 transition"
+                          title="Tùy chỉnh tiền tố mã định danh cho toàn bộ danh sách nhập (VD: COP, VID, CAM...)"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const text = await navigator.clipboard.readText();
+                            if (text) {
+                              setYtBatchText(prev => prev ? `${prev}\n${text}` : text);
+                            }
+                          } catch (err) {
+                            alert('Trình duyệt chưa cấp quyền đọc Clipboard.');
                           }
-                        } catch (err) {
-                          alert('Trình duyệt chưa cấp quyền đọc Clipboard.');
-                        }
-                      }}
-                      className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-                    >
-                      <Clipboard className="w-3 h-3" />
-                      <span>Dán link từ Clipboard</span>
-                    </button>
+                        }}
+                        className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
+                      >
+                        <Clipboard className="w-3 h-3" />
+                        <span>Dán link từ Clipboard</span>
+                      </button>
+                    </div>
                   </div>
                   <textarea
                     value={ytBatchText}
@@ -2869,15 +3033,157 @@ const addFiles = async () => {
                   </button>
                 </div>
               </div>
+            ) : ytBatchTab === 'history' ? (
+              /* ── History & Asset Code Lookup Tab ── */
+              <div className="space-y-4 pt-1 animate-in fade-in duration-150">
+                {/* Search bar */}
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={ytHistorySearch}
+                      onChange={e => setYtHistorySearch(e.target.value)}
+                      placeholder="Tra cứu nhanh theo Mã (VD: COP0710_01), Link YouTube, hoặc Tiêu đề video..."
+                      className="w-full bg-black/60 border border-gray-700 rounded-xl pl-9 pr-8 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition font-mono"
+                    />
+                    {ytHistorySearch && (
+                      <button
+                        onClick={() => setYtHistorySearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
+                    <span>
+                      {ytHistoryLoading ? (
+                        <span className="flex items-center gap-1 text-indigo-400">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Đang tìm kiếm...
+                        </span>
+                      ) : (
+                        `Tìm thấy ${ytHistoryList.length} video trong lịch sử`
+                      )}
+                    </span>
+                    <span className="text-[10px] text-gray-500">
+                      File Excel đồng bộ tự động tại: <code className="text-gray-400 font-mono">output_clips/danh_sach_youtube_goc.csv</code>
+                    </span>
+                  </div>
+                </div>
+
+                {/* List of history records */}
+                <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                  {ytHistoryList.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-gray-800 rounded-xl">
+                      <p className="text-xs text-gray-500">Chưa tìm thấy video YouTube nào phù hợp.</p>
+                      <p className="text-[11px] text-gray-600 mt-1">Khi bạn dán link và cắt clip, mã quản lý sẽ tự động lưu vào đây.</p>
+                    </div>
+                  ) : (
+                    ytHistoryList.map(rec => (
+                      <div
+                        key={rec.yt_id || rec.asset_code}
+                        className="p-3 bg-gray-900/60 hover:bg-gray-900/90 border border-gray-800 hover:border-gray-700 rounded-xl flex items-center justify-between gap-3 transition group"
+                      >
+                        {/* Left: Code badge & Date */}
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="flex flex-col items-center justify-center px-2.5 py-1.5 bg-gradient-to-br from-indigo-950/80 to-purple-950/80 border border-indigo-700/50 rounded-lg shrink-0">
+                            <span className="text-xs font-mono font-extrabold text-indigo-200 tracking-wider">
+                              {rec.asset_code}
+                            </span>
+                            <span className="text-[9px] text-indigo-400 font-medium mt-0.5">
+                              {rec.date_added || 'Hôm nay'}
+                            </span>
+                          </div>
+
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-bold text-gray-100 truncate group-hover:text-white" title={rec.title}>
+                              {rec.title || 'YouTube Video'}
+                            </h4>
+                            <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
+                              <span className="font-mono text-gray-500 text-[10px] truncate max-w-xs">{rec.url}</span>
+                              <span>·</span>
+                              <span className="text-emerald-400 font-medium text-[10px]">{rec.clips_count || 0} clips đã cắt</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right: Actions */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => window.open(rec.url, '_blank')}
+                            className="px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/50 hover:border-red-600/60 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                            title="Mở video này trên YouTube"
+                          >
+                            <ExternalLink className="w-3 h-3 text-red-400" />
+                            <span>Mở YouTube</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(rec.url);
+                              setYtCopiedCode(rec.asset_code);
+                              setTimeout(() => setYtCopiedCode(''), 2000);
+                            }}
+                            className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                            title="Sao chép link YouTube gốc"
+                          >
+                            {ytCopiedCode === rec.asset_code ? (
+                              <>
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                <span className="text-emerald-400">Đã chép!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3 text-gray-400" />
+                                <span>Copy Link</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setYtUrl(rec.url);
+                              setYtBatchTab('single');
+                            }}
+                            className="px-2.5 py-1.5 bg-indigo-950/50 hover:bg-indigo-900/70 text-indigo-300 border border-indigo-800/50 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                            title="Tải hoặc phân tích lại video này"
+                          >
+                            <Zap className="w-3 h-3 text-indigo-400" />
+                            <span>Dùng lại</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             ) : (
               /* ── Single Video Analysis Tab ── */
               <div className="space-y-4 pt-1 animate-in fade-in duration-150">
                 {/* Input URL & Mode */}
                 <div className="space-y-2">
-                  <label className="text-[11px] font-medium text-gray-300 flex items-center justify-between">
-                    <span>Dán link YouTube (Public hoặc Unlisted)</span>
-                    <span className="text-[10px] text-gray-500">Hỗ trợ link youtube.com hoặc youtu.be</span>
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-medium text-gray-300 flex items-center gap-1.5">
+                      <span>Dán link YouTube (Public hoặc Unlisted)</span>
+                      <span className="text-[10px] text-gray-500">· Hỗ trợ link youtube.com hoặc youtu.be</span>
+                    </label>
+                    <div className="flex items-center gap-1.5 bg-black/40 border border-gray-700/80 px-2 py-0.5 rounded-lg">
+                      <span className="text-[10px] text-gray-400 font-medium">Tiền tố mã:</span>
+                      <input
+                        type="text"
+                        value={ytCodePrefix}
+                        onChange={e => handleUpdatePrefix(e.target.value)}
+                        placeholder="COP"
+                        maxLength={8}
+                        className="w-14 bg-black/60 border border-gray-600 rounded px-1.5 py-0.5 text-center font-mono font-bold text-indigo-300 text-[11px] uppercase focus:outline-none focus:border-indigo-400 transition"
+                        title="Tùy chỉnh tiền tố mã định danh (VD: COP, VID, CAM...). Mặc định là COP"
+                      />
+                    </div>
+                  </div>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <input
@@ -2938,6 +3244,64 @@ const addFiles = async () => {
                       )}
                     </button>
                   </div>
+
+                  {/* Real-time Duplicate Warning or Planned Asset Code */}
+                  {ytDupCheck?.exists && (
+                    <div className="p-3 bg-amber-950/40 border border-amber-600/50 rounded-xl flex items-center justify-between animate-in fade-in">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold shrink-0">
+                          ⚠️
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-amber-200">Video này đã làm ngày {ytDupCheck.record?.date_added}!</span>
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold text-[11px] border border-amber-500/40">
+                              {ytDupCheck.record?.asset_code}
+                            </span>
+                            <span className="text-[10px] text-gray-400">
+                              ({ytDupCheck.record?.clips_count || 0} clips đã cắt)
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-300/80 truncate max-w-lg mt-0.5">
+                            {ytDupCheck.record?.title}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => window.open(ytDupCheck.record?.url, '_blank')}
+                          className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold rounded-lg flex items-center gap-1 transition"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span>Mở YouTube gốc</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(ytDupCheck.record?.url);
+                            alert('✅ Đã copy link YouTube gốc!');
+                          }}
+                          className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold rounded-lg flex items-center gap-1 transition"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Copy Link</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!ytDupCheck?.exists && ytDupCheck?.next_code && (
+                    <div className="px-3 py-1.5 bg-indigo-950/30 border border-indigo-800/40 rounded-xl flex items-center justify-between text-[11px] animate-in fade-in">
+                      <span className="text-gray-400 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                        Video mới — Mã quản lý tự động sẽ cấp:
+                      </span>
+                      <span className="font-mono font-bold text-indigo-300 bg-indigo-900/60 px-2.5 py-0.5 rounded-lg border border-indigo-700/50">
+                        🏷️ {ytDupCheck.next_code}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Error banner */}
@@ -3054,6 +3418,21 @@ const addFiles = async () => {
                                   <p className="text-[11px] text-gray-400 mt-1 text-left line-clamp-2">
                                     💡 {cand.highlight_reason}
                                   </p>
+                                )}
+
+                                {/* Lỗi tải về hoặc mất mạng kèm nút thử lại */}
+                                {ytDownloadErrors[idx] && (
+                                  <div className="mt-2 p-2 rounded-xl bg-red-950/70 border border-red-800/80 text-[11px] text-red-300 flex items-center justify-between gap-2 animate-in fade-in">
+                                    <span className="truncate flex-1">⚠️ {ytDownloadErrors[idx]}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDownloadYtCandidate(cand, idx)}
+                                      className="px-2.5 py-1 rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold text-[10px] shrink-0 transition shadow flex items-center gap-1"
+                                    >
+                                      <RefreshCw className="w-2.5 h-2.5" />
+                                      <span>Thử lại</span>
+                                    </button>
+                                  </div>
                                 )}
 
                                 {/* Thanh tiến trình tải thời gian thực */}
@@ -5962,6 +6341,18 @@ const poll = async () => {
                     onChange={v => updateCfg({ auto_clean_temp: v })}
                   />
                 </div>
+                <div className="pt-1.5 border-t border-gray-800/60 mt-1 flex items-center justify-between">
+                  <span className="text-[9px] text-gray-400">Tiền tố mã YouTube (Asset Code)</span>
+                  <input
+                    type="text"
+                    value={ytCodePrefix}
+                    onChange={e => handleUpdatePrefix(e.target.value)}
+                    placeholder="COP"
+                    maxLength={8}
+                    className="w-16 bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-center font-mono font-bold text-indigo-300 text-[10px] uppercase focus:outline-none focus:border-indigo-500"
+                    title="Tiền tố mã phân cảnh YouTube (VD: COP, VID, CAM...)"
+                  />
+                </div>
               </Section>
             </>}
           </div>
@@ -7635,6 +8026,24 @@ const stTime = ovl.start_time ?? 0;
             </div>
           )}
 
+          {/* ── Corrupted / missing clips retry banner (mất mạng / file rỗng) ── */}
+          {editQueue.some(c => c.file_valid === false) && (
+            <div className="px-3 py-1.5 bg-red-950/80 border-b border-red-800/80 flex items-center justify-between shrink-0 animate-pulse">
+              <span className="text-[8px] font-bold text-red-300 flex items-center gap-1">
+                <span>⚠️</span> {editQueue.filter(c => c.file_valid === false).length} clip lỗi file / mất mạng
+              </span>
+              <button
+                onClick={redownloadAllFailedClips}
+                disabled={isRedownloadingAll}
+                className="px-2 py-0.5 bg-red-800 hover:bg-red-700 text-white rounded text-[8px] font-bold transition flex items-center gap-1 shadow-sm"
+                title="Tự động tải lại / cắt lại toàn bộ clip bị lỗi file do mất mạng hoặc ngắt kết nối"
+              >
+                <RefreshCw className={`w-2.5 h-2.5 ${isRedownloadingAll ? 'animate-spin' : ''}`} />
+                <span>{isRedownloadingAll ? 'Đang tải lại…' : 'Tải lại tất cả'}</span>
+              </button>
+            </div>
+          )}
+
           {/* ── Queue list (virtualized) ── */}
           <div className="flex-1 overflow-hidden">
             {editQueue.length === 0
@@ -7702,6 +8111,17 @@ const stTime = ovl.start_time ?? 0;
                           </div>
                         </div>
                         <div className="flex items-center gap-0.5 shrink-0">
+                          {clip.file_valid === false && (
+                            <button
+                              onClick={e => { e.stopPropagation(); handleRedownloadClip(clip, idx); }}
+                              disabled={redownloadingMap[clip.clip_path || clip.path]}
+                              className="px-1.5 py-0.5 rounded bg-red-950/90 hover:bg-red-900 border border-red-700/80 text-red-200 text-[8px] font-bold flex items-center gap-1 transition shadow-sm animate-pulse mr-1"
+                              title="File clip bị lỗi hoặc rỗng (do mất mạng / gián đoạn) — Click để tải lại ngay!"
+                            >
+                              <RefreshCw className={`w-2.5 h-2.5 ${redownloadingMap[clip.clip_path || clip.path] ? 'animate-spin' : ''}`} />
+                              <span>{redownloadingMap[clip.clip_path || clip.path] ? 'Đang tải…' : 'Tải lại clip'}</span>
+                            </button>
+                          )}
                           {clip.title_error ? (
                             <button
                               onClick={e => { e.stopPropagation(); regenTitle(idx); }}
@@ -7802,6 +8222,15 @@ return (
           >
             <Youtube className="w-3.5 h-3.5 text-red-500" />
             <span>YouTube AI</span>
+          </button>
+
+          <button
+            onClick={() => { setShowYtModal(true); setYtBatchTab('history'); }}
+            className="px-2.5 py-1 bg-purple-950/40 hover:bg-purple-900/50 border border-purple-700/40 rounded-xl text-purple-300 text-xs font-semibold flex items-center gap-1.5 transition shadow-sm hover:border-purple-500/60"
+            title="Tra cứu mã video (COP0710_01) để lấy lại link YouTube gốc khi clip nổ"
+          >
+            <Search className="w-3.5 h-3.5 text-purple-400" />
+            <span>Tra Cứu Mã Video</span>
           </button>
 
           {ytCookiesStatus.has_cookies ? (

@@ -97,6 +97,8 @@ from app import (
     ST_QUEUED, ST_UPLOADING, ST_ANALYZING, ST_DONE, ST_ERROR,
     get_youtube_info, download_youtube_section, get_yt_cookie_file,
 )
+from youtube_manager import yt_history_manager, extract_youtube_id
+
 try:
     from app import _probe_encoders as _probe_hw_encoders
 except ImportError:
@@ -141,7 +143,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.4", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.5", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -579,6 +581,7 @@ class ConfigModel(BaseModel):
     direct_import_gen_title: Optional[bool] = True
     auto_clean_temp: Optional[bool] = True
     analysis_parallel: Optional[int] = None   # concurrent analysis streams (1-10)
+    youtube_code_prefix: Optional[str] = "COP"
     video_files: Optional[List[str]] = None
 
 class VideoAddRequest(BaseModel):
@@ -2492,7 +2495,18 @@ async def stream_clip_preview(path: str, start: float = 0.0, dur: float = 16.0):
 @app.get("/api/edit_queue")
 def get_edit_queue():
     with STATE_LOCK:
-        return {"clips": list(app_state.edit_queue)}
+        results = []
+        for e in app_state.edit_queue:
+            item = dict(e)
+            cp = item.get("clip_path") or item.get("path")
+            p = Path(cp) if cp else None
+            is_valid = bool(p and p.exists() and p.stat().st_size >= 10 * 1024)
+            item["file_valid"] = is_valid
+            item["file_size"] = p.stat().st_size if (p and p.exists()) else 0
+            src = item.get("source") or item.get("source_path") or ""
+            item["has_source"] = bool(src)
+            results.append(item)
+        return {"clips": results}
 
 class RemoveEditRequest(BaseModel):
     path: str
@@ -2545,6 +2559,109 @@ def add_to_edit_queue(req: AddEditRequest):
     return {"status": "ok", "entry": entry}
 
 
+class RedownloadClipRequest(BaseModel):
+    clip_path: str
+
+@app.post("/api/edit_queue/redownload")
+def redownload_edit_queue_clip(req: RedownloadClipRequest):
+    """Re-downloads or re-cuts a clip whose file is missing or corrupted due to network disconnection."""
+    target_entry = None
+    with STATE_LOCK:
+        for e in app_state.edit_queue:
+            if (e.get("clip_path") or e.get("path")) == req.clip_path:
+                target_entry = e
+                break
+
+    if not target_entry:
+        raise HTTPException(status_code=404, detail="Clip không tồn tại trong hàng đợi Tab 2.")
+
+    src = target_entry.get("source") or target_entry.get("source_path") or ""
+    if not src:
+        raise HTTPException(status_code=400, detail="Clip không có thông tin nguồn gốc để tải lại.")
+
+    is_yt = src.startswith(("http://", "https://"))
+    start_ts = target_entry.get("start_time") or "00:00:00"
+    dur = float(target_entry.get("duration") or CLIP_DURATION)
+    dst = Path(target_entry.get("clip_path") or target_entry.get("path"))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    if dst.exists():
+        try:
+            dst.unlink()
+        except Exception:
+            pass
+
+    app_state.log(f"🔄 Đang tải lại clip: {dst.name} từ nguồn {src}...", "info")
+
+    if is_yt:
+        start_sec = ts_to_seconds(start_ts)
+        end_sec = start_sec + dur
+        eh = int(end_sec // 3600); em = int((end_sec % 3600) // 60); es = end_sec % 60
+        end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}" if es % 1 else f"{eh:02d}:{em:02d}:{int(es):02d}"
+        cookie_browser = app_state.config.get("youtube_cookie_browser", None)
+        try:
+            download_youtube_section(
+                url=src,
+                start_time=start_ts,
+                end_time=end_ts,
+                output_path=str(dst),
+                cookies_browser=cookie_browser,
+                log=lambda m: app_state.log(m, "info"),
+            )
+        except Exception as e:
+            app_state.log(f"❌ Tải lại clip thất bại: {e}", "error")
+            raise HTTPException(status_code=500, detail=f"Tải lại clip thất bại: {e}")
+    else:
+        v_path = _safe_resolve_path(src)
+        if not v_path or not v_path.exists():
+            raise HTTPException(status_code=404, detail=f"Không tìm thấy video gốc: {src}")
+        try:
+            cut_clip_exact(v_path, start_ts, dst, _make_logger(lambda m: app_state.log(m, "info")), duration=dur)
+        except Exception as e:
+            app_state.log(f"❌ Cắt lại clip thất bại: {e}", "error")
+            raise HTTPException(status_code=500, detail=f"Cắt lại clip thất bại: {e}")
+
+    if not dst.exists() or dst.stat().st_size < 10 * 1024:
+        raise HTTPException(status_code=500, detail="Clip sau khi tải lại vẫn bị lỗi hoặc rỗng dữ liệu.")
+
+    app_state.log(f"✅ Tải lại clip thành công: {dst.name} ({dst.stat().st_size / (1024 * 1024):.2f} MB)", "ok")
+    return {"status": "ok", "clip_path": str(dst), "file_size": dst.stat().st_size}
+
+
+@app.post("/api/edit_queue/redownload_all_failed")
+def redownload_all_failed_clips():
+    """Finds all clips in edit_queue with invalid/corrupt files and re-downloads them automatically."""
+    failed_items = []
+    with STATE_LOCK:
+        for e in app_state.edit_queue:
+            cp = e.get("clip_path") or e.get("path")
+            p = Path(cp) if cp else None
+            if not p or not p.exists() or p.stat().st_size < 10 * 1024:
+                src = e.get("source") or e.get("source_path") or ""
+                if src:
+                    failed_items.append(dict(e))
+
+    if not failed_items:
+        return {"status": "ok", "message": "Không có clip nào bị lỗi file.", "fixed_count": 0, "failed_count": 0}
+
+    fixed = 0
+    errors = []
+    for item in failed_items:
+        cp = item.get("clip_path") or item.get("path")
+        try:
+            redownload_edit_queue_clip(RedownloadClipRequest(clip_path=cp))
+            fixed += 1
+        except Exception as exc:
+            errors.append(f"{Path(cp).name}: {exc}")
+
+    return {
+        "status": "ok",
+        "fixed_count": fixed,
+        "failed_count": len(errors),
+        "errors": errors,
+    }
+
+
 class SendAllCandidatesRequest(BaseModel):
     video_path: str
     trim_start_offset: float = 0.0
@@ -2585,9 +2702,9 @@ def _cut_and_queue_video_candidates(
     if not candidates:
         return [], ""
 
+    asset_code = ""
     if is_yt:
         yt_title = getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("title") or "yt_clip"
-        stem = sanitize(yt_title)[:30]
         vid_dur = float(getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("duration", 0.0) or 0.0)
         if vid_dur <= 0:
             try:
@@ -2597,8 +2714,22 @@ def _cut_and_queue_video_candidates(
                         app_state.yt_metadata = {}
                     app_state.yt_metadata[video_path] = info
                     vid_dur = float(info.get("duration", 0.0) or 0.0)
+                    if not yt_title or yt_title == "yt_clip":
+                        yt_title = info.get("title", "yt_clip")
             except Exception:
                 pass
+        prefix = app_state.config.get("youtube_code_prefix", "COP")
+        out_f = str(raw_dir.parent if raw_dir else Path("output_clips"))
+        yt_rec = yt_history_manager.register_or_get(
+            video_path,
+            title=yt_title,
+            duration=vid_dur,
+            prefix=prefix,
+            output_folder=out_f,
+        )
+        asset_code = yt_rec.get("asset_code", "")
+        clean_title = sanitize(yt_title)[:25]
+        stem = f"{asset_code}_{clean_title}" if asset_code else clean_title
     else:
         stem = sanitize(v_path.stem)
         vid_dur = get_video_duration(v_path) or 0.0
@@ -2680,6 +2811,23 @@ def _cut_and_queue_video_candidates(
                     app_state.log(f"❌ Cắt cảnh #{idx+1} thất bại: {exc}", "error")
                     continue
 
+        # Đảm bảo clip YouTube tải về hợp lệ và không phải file rỗng (261 bytes) trước khi đưa vào hàng đợi
+        if is_yt and (not dst.exists() or dst.stat().st_size < 10 * 1024):
+            app_state.log(f"⚠️ Clip YouTube #{idx+1} ({dst.name}) không hợp lệ hoặc rỗng ({dst.stat().st_size if dst.exists() else 0} bytes), bỏ qua.", "warning")
+            if dst.exists():
+                try:
+                    dst.unlink()
+                except Exception:
+                    pass
+            continue
+
+        if is_yt and asset_code:
+            yt_history_manager.increment_clips(
+                asset_code,
+                clip_name=dst.name,
+                output_folder=str(raw_dir.parent if raw_dir else Path("output_clips"))
+            )
+
         suggested = chosen.get("suggested_titles", [])
         title1 = (suggested[0] if (suggested and len(suggested) > 0) else chosen.get("title", "")).strip()
 
@@ -2689,6 +2837,7 @@ def _cut_and_queue_video_candidates(
             "name":      dst.name,
             "title":     title1,
             "source":    video_path if is_yt else v_path.name,
+            "asset_code": asset_code,
             "start_time": start_ts,
             "start_sec":  start_sec,
             "duration":   dur,
@@ -5103,6 +5252,11 @@ def _run_queue_export_inner(req: QueueExportRequest, total_overall: int, complet
                 continue
             _export_item(retrying_item, is_retry=True)
 
+    try:
+        yt_history_manager._sync_csv_unlocked(str(out_dir))
+    except Exception:
+        pass
+
 
 def _clean_orphaned_temp_uploads() -> tuple[int, float]:
     """Scan temp_uploads and delete orphaned files not in active queue, batches, or session.
@@ -5487,6 +5641,7 @@ class YouTubeInfoRequest(BaseModel):
 class YouTubeAnalyzeRequest(BaseModel):
     url: str
     mode: str = "short"  # "short" | "story"
+    prefix: Optional[str] = None
 
 class YouTubeDownloadRequest(BaseModel):
     url: str
@@ -5495,6 +5650,7 @@ class YouTubeDownloadRequest(BaseModel):
     title: str = ""
     suggested_titles: List[str] = []
     target: str = "edit"
+    prefix: Optional[str] = None
 
 class YouTubeCookieUploadRequest(BaseModel):
     content: str
@@ -5552,11 +5708,32 @@ def delete_yt_cookies_endpoint():
     app_state.log("🍪 Đã xóa file cookies YouTube", "info")
     return {"status": "ok", "deleted": deleted}
 
+class YouTubeCheckUrlRequest(BaseModel):
+    url: str
+    prefix: Optional[str] = None
+
+class YouTubeLookupRequest(BaseModel):
+    query: str
+
+@app.post("/api/youtube/check_url")
+def check_youtube_url_endpoint(req: YouTubeCheckUrlRequest):
+    prefix = req.prefix or app_state.config.get("youtube_code_prefix", "COP")
+    return yt_history_manager.check_url(req.url, prefix=prefix)
+
+@app.get("/api/youtube/history")
+def get_youtube_history_endpoint(limit: int = 100):
+    return {"history": yt_history_manager.get_all(limit=limit)}
+
+@app.post("/api/youtube/lookup")
+def lookup_youtube_endpoint(req: YouTubeLookupRequest):
+    return {"results": yt_history_manager.lookup(req.query)}
+
 class YouTubeBatchAddRequest(BaseModel):
     urls: Optional[List[str]] = None
     text: Optional[str] = None
     analyze_now: Optional[bool] = False
     mode: Optional[str] = "short"
+    prefix: Optional[str] = None
 
 @app.post("/api/youtube/batch_add")
 def batch_add_youtube(req: YouTubeBatchAddRequest):
@@ -5590,7 +5767,13 @@ def batch_add_youtube(req: YouTubeBatchAddRequest):
     added = []
     existing = {str(p.resolve()) if hasattr(p, "resolve") else str(p) for p in app_state.video_files}
 
+    prefix = (req.prefix or app_state.config.get("youtube_code_prefix", "COP")).strip().upper()
+    if req.prefix and req.prefix.strip():
+        app_state.config["youtube_code_prefix"] = prefix
+    out_f = app_state.get_current_output_folder()
+
     for url in valid_urls:
+        yt_history_manager.register_or_get(url, prefix=prefix, output_folder=out_f)
         if url not in existing:
             app_state.video_files.append(url)
             added.append(url)
@@ -5617,6 +5800,13 @@ def batch_add_youtube(req: YouTubeBatchAddRequest):
                         app_state.yt_metadata = {}
                     app_state.yt_metadata[u] = info
                     app_state.save_session()
+                    yt_history_manager.register_or_get(
+                        u,
+                        title=info.get("title", ""),
+                        duration=float(info.get("duration", 0) or 0),
+                        prefix=prefix,
+                        output_folder=out_f,
+                    )
                     _sse_bus.push("videos_changed", {"action": "metadata_updated", "url": u})
             except Exception:
                 pass
@@ -5716,10 +5906,23 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
                 candidates = valid if valid else candidates
 
             app_state.log(f"✅ Gemini analysis complete for: {vid_title} ({len(candidates)} highlights found)", "ok")
+            prefix = (req.prefix or app_state.config.get("youtube_code_prefix", "COP")).strip().upper()
+            if req.prefix and req.prefix.strip():
+                app_state.config["youtube_code_prefix"] = prefix
+                app_state.save_config()
+            out_f = app_state.get_current_output_folder()
+            yt_rec = yt_history_manager.register_or_get(
+                url,
+                title=vid_title,
+                duration=vid_dur,
+                prefix=prefix,
+                output_folder=out_f,
+            )
             return {
                 "status": "ok",
                 "info": info or {"title": vid_title, "duration": vid_dur, "url": url},
                 "candidates": candidates,
+                "asset_code": yt_rec.get("asset_code", ""),
             }
         except Exception as e:
             rotator.penalize(key, KeyRotator.COOLDOWN_GENERIC)
@@ -5739,11 +5942,6 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
     tmp_dir = Path("temp_uploads")
     tmp_dir.mkdir(exist_ok=True)
 
-    clean_title = sanitize(req.title) if req.title else "yt_clip"
-    start_clean = req.start_time.replace(":", "-")
-    filename = f"{clean_title[:30]}_{start_clean}.mp4"
-    output_path = tmp_dir / filename
-
     cookie_browser = app_state.config.get("youtube_cookie_browser", None)
     app_state.log(f"⚡ Downloading YouTube highlight [{req.start_time} - {req.end_time}]...", "info")
 
@@ -5758,6 +5956,26 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
                 vid_dur = float(info.get("duration", 0.0) or 0.0)
         except Exception:
             pass
+
+    prefix = (req.prefix or app_state.config.get("youtube_code_prefix", "COP")).strip().upper()
+    if req.prefix and req.prefix.strip():
+        app_state.config["youtube_code_prefix"] = prefix
+        app_state.save_config()
+    out_f = app_state.get_current_output_folder()
+    yt_rec = yt_history_manager.register_or_get(
+        url,
+        title=req.title or "",
+        duration=vid_dur,
+        prefix=prefix,
+        output_folder=out_f,
+    )
+    asset_code = yt_rec.get("asset_code", "")
+
+    clean_title = sanitize(req.title) if req.title else "yt_clip"
+    start_clean = req.start_time.replace(":", "-")
+    prefix_str = f"{asset_code}_" if asset_code else ""
+    filename = f"{prefix_str}{clean_title[:20]}_{start_clean}.mp4"
+    output_path = tmp_dir / filename
 
     try:
         final_path = download_youtube_section(
@@ -5774,13 +5992,27 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     dst_p = Path(final_path)
+    if not dst_p.exists() or dst_p.stat().st_size < 50 * 1024:
+        if dst_p.exists():
+            try:
+                dst_p.unlink()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail="Clip tải về từ YouTube bị lỗi hoặc rỗng dữ liệu. Vui lòng thử lại!")
+
+    if asset_code:
+        yt_history_manager.increment_clips(asset_code, clip_name=dst_p.name, output_folder=out_f)
+
+    main_title = req.title or ""
+
     entry = {
         "clip_path": str(dst_p),
         "path": str(dst_p),
         "name": dst_p.name,
         "source_path": url,
-        "title": req.title or "",
-        "suggested_titles": req.suggested_titles or ([req.title] if req.title else []),
+        "asset_code": asset_code,
+        "title": main_title,
+        "suggested_titles": req.suggested_titles or ([main_title] if main_title else []),
         "description": "",
         "highlight_reason": "",
         "state": _default_edit_state(),
@@ -5831,7 +6063,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.4"
+        local_ver = "2.9.5"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

@@ -2397,18 +2397,28 @@ def download_youtube_section(
         except Exception:
             pass
 
+    MIN_VALID_CLIP_BYTES = 50 * 1024  # Valid 15-90s MP4 clips are >= 50KB; empty skeletons are ~261 bytes
+
     def _safe_run_download(opts_dict: dict, max_tries: int = 2) -> bool:
         last_e = None
         for attempt in range(max_tries):
             try:
+                # Clean up any partial/corrupted skeleton file before trying
+                if out_p.exists() and out_p.stat().st_size < MIN_VALID_CLIP_BYTES:
+                    try:
+                        out_p.unlink()
+                    except Exception:
+                        pass
                 with yt_dlp.YoutubeDL(opts_dict) as ydl_inst:
                     ydl_inst.download([url])
-                if out_p.exists() and out_p.stat().st_size > 1024:
+                if out_p.exists() and out_p.stat().st_size >= MIN_VALID_CLIP_BYTES:
                     return True
+                actual_sz = out_p.stat().st_size if out_p.exists() else 0
+                last_e = RuntimeError(f"Tải video YouTube không thành công (file chỉ có {actual_sz} bytes, thiếu luồng video/audio)")
             except Exception as ex:
                 last_e = ex
                 if attempt < max_tries - 1:
-                    time.sleep(1.5)
+                    time.sleep(2.0)
         if last_e:
             raise last_e
         return False
@@ -2417,19 +2427,41 @@ def download_youtube_section(
         _safe_run_download(ydl_opts, max_tries=2)
     except Exception as e:
         err_msg = str(e)
-        # Nếu cookie bị lỗi hoặc session cookie hỏng (ví dụ: "The page needs to be reloaded", "Requested format not available",...)
-        # -> Tự động thử lại ngay mà không dùng cookie
+        # Nếu cookie bị lỗi hoặc session cookie hỏng -> Tự động thử lại ngay mà không dùng cookie
         if 'cookiefile' in ydl_opts or 'cookiesfrombrowser' in ydl_opts:
             _safe_log("⚠️ Cookie YouTube bị lỗi hoặc hết hạn, đang tự động thử lại không dùng cookie...")
             ydl_opts_no_cookie = dict(ydl_opts)
             ydl_opts_no_cookie.pop('cookiefile', None)
             ydl_opts_no_cookie.pop('cookiesfrombrowser', None)
             try:
-                _safe_run_download(ydl_opts_no_cookie, max_tries=2)
-                if out_p.exists() and out_p.stat().st_size > 1024:
-                    return str(out_p.resolve())
+                if _safe_run_download(ydl_opts_no_cookie, max_tries=2):
+                    if out_p.exists() and out_p.stat().st_size >= MIN_VALID_CLIP_BYTES:
+                        return str(out_p.resolve())
             except Exception as e_retry:
                 err_msg = str(e_retry)
+
+        # Fallback 2: Thử luồng dự phòng không giới hạn client / format (phòng khi YouTube CDN từ chối range request mp4)
+        _safe_log("🔄 Đang thử lại với luồng tải dự phòng linh hoạt...")
+        ydl_opts_fallback = dict(ydl_opts)
+        ydl_opts_fallback['format'] = 'bestvideo+bestaudio/best'
+        ydl_opts_fallback.pop('extractor_args', None)
+        try:
+            if _safe_run_download(ydl_opts_fallback, max_tries=2):
+                if out_p.exists() and out_p.stat().st_size >= MIN_VALID_CLIP_BYTES:
+                    return str(out_p.resolve())
+        except Exception as e_fb:
+            err_msg = str(e_fb)
+
+        is_network_err = any(k in err_msg.lower() for k in [
+            "connection reset", "timed out", "timeout", "remote end closed",
+            "network is unreachable", "no route to host", "temporary failure in name resolution",
+            "getaddrinfo failed", "connection refused", "broken pipe", "failed to establish a new connection"
+        ])
+        if is_network_err:
+            raise RuntimeError(
+                f"[LỖI MẠNG] Mất kết nối Internet hoặc mạng bị rớt khi đang tải clip ({err_msg}). "
+                "Vui lòng kiểm tra lại đường truyền WiFi/mạng và bấm Thử lại!"
+            ) from e
 
         if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
             raise RuntimeError(
@@ -2438,8 +2470,13 @@ def download_youtube_section(
             ) from e
         raise RuntimeError(err_msg) from e
 
-    if not out_p.exists():
-        raise RuntimeError(f"Failed to download YouTube section: {url}")
+    if not out_p.exists() or out_p.stat().st_size < MIN_VALID_CLIP_BYTES:
+        if out_p.exists():
+            try:
+                out_p.unlink()
+            except Exception:
+                pass
+        raise RuntimeError(f"Tải đoạn clip YouTube thất bại hoặc file không hợp lệ: {url}")
 
     return str(out_p.resolve())
 
@@ -4079,6 +4116,9 @@ def _whisper_transcribe(clip: Path, log: ToolLogger,
     custom_audio_path_str = edit_state.get("custom_audio_path", "") if edit_state else ""
     has_custom_audio = bool(custom_audio_path_str and Path(custom_audio_path_str).exists())
 
+    if not clip.exists() or clip.stat().st_size < 10240:
+        raise RuntimeError(f"File video nguồn rỗng hoặc không tồn tại ({clip.name}, dung lượng {clip.stat().st_size if clip.exists() else 0} bytes)")
+
     try:
         if has_custom_audio:
             ca_path = Path(custom_audio_path_str)
@@ -5018,6 +5058,9 @@ def render_reup(clip: Path, dst: Path, title: str,
       • Optional: cinematic colour grade on the foreground layer
       • Optional: subtitles burned at 200 px from the bottom
     """
+    if not clip.exists() or clip.stat().st_size < 10240:
+        raise RuntimeError(f"File video nguồn rỗng hoặc không tồn tại ({clip.name}, dung lượng {clip.stat().st_size if clip.exists() else 0} bytes). Vui lòng cắt/tải lại clip này!")
+
     st = edit_state or {}
     effective_grade = st.get("color_grade", color_grade)
     video_x_offset  = int(st.get("video_x", 0))

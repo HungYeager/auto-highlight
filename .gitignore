@@ -6,6 +6,8 @@
 config.json
 cookies.txt
 session_data.json
+youtube_history.json
+danh_sach_youtube_goc.csv
 *.pem
 *.key
 .env

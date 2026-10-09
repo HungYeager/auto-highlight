@@ -1,6 +1,6 @@
 {
-  "version": "2.9.4",
-  "release_date": "2026-10-03",
-  "changelog": "- Thêm chỉ báo (mark) nhận diện video đã gắn sticker / ảnh / video layer trong Queue ở Tab 2\n- Hiển thị viền hồng chỉ báo và badge số lượng sticker trực quan ngay trên mỗi dòng clip trong Queue\n- Thống kê tổng số video đã có sticker ngay trên thanh tiêu đề Queue\n- Sửa lỗi Clip Trimmer nhập tay Clip Length (không còn bị cứng 16 giây)\n- Giữ nguyên thiết lập Trimmer (độ dài, start/end offset) khi chuyển đổi giữa các video và các candidate\n- Sửa logic 'Phân tích tất cả': chỉ phân tích các video chưa phân tích, tự động bỏ qua video đã hoàn thành\n- Hỗ trợ cắt hàng loạt (batch cuts) tôn trọng đúng độ dài và offset đã chỉnh",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.4/OpenCutStudio_v2.9.4.zip"
+  "version": "2.9.5",
+  "release_date": "2026-10-09",
+  "changelog": "- Tích hợp YouTube Video trực tiếp: phân tích và cắt clip từ link YouTube đơn lẻ hoặc nhập danh sách hàng loạt\n- Hệ thống mã định danh cảnh quay (Asset Code) tự động theo ngày và tiền tố (VD: COP0910_01, VID0910_01)\n- Cho phép tùy chỉnh tiền tố mã (Asset Code Prefix) linh hoạt ngay trên giao diện và trong Settings\n- Tự động lưu lịch sử video gốc và đồng bộ file Excel danh_sach_youtube_goc.csv, hỗ trợ tra cứu ngược video gốc chỉ trong 1 giây\n- Tiêu đề clip sạch sẽ, không chèn hashtag thừa\n- Cơ chế tự phục hồi và chống lỗi rớt mạng (Self-Healing & Anti-Corrupt): tự động chuyển luồng dự phòng, xóa file rỗng chống crash Whisper/FFmpeg\n- Thêm nút tải lại 1-click trực tiếp trên thẻ clip ở Tab 2 khi phát hiện file lỗi hoặc mất mạng\n- Thêm nút tải lại hàng loạt 'Tải lại tất cả' khi có clip bị gián đoạn đường truyền",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.5/OpenCutStudio_v2.9.5.zip"
 }
