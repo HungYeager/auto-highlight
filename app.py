@@ -1059,50 +1059,65 @@ def _get_ocr_engine():
         if _RAPIDOCR_INSTANCE is not None:
             return _RAPIDOCR_INSTANCE
 
-        # 1. Try initializing with GPU (CUDA)
+        import rapidocr_onnxruntime.rapid_ocr_api as api
+        orig_read_yaml = getattr(api, '_orig_read_yaml', None)
+        if orig_read_yaml is None:
+            orig_read_yaml = api.read_yaml
+            api._orig_read_yaml = orig_read_yaml
+
+        # 1. Try initializing with GPU (CUDA) if CUDAExecutionProvider is present and functional
         try:
             _setup_cuda_dlls()
             import onnxruntime as ort
-            try:
-                ort.set_default_logger_severity(3)
-            except Exception:
-                pass
+            available_providers = ort.get_available_providers()
+            if 'CUDAExecutionProvider' in available_providers:
+                try:
+                    ort.set_default_logger_severity(3)
+                except Exception:
+                    pass
 
-            import rapidocr_onnxruntime.rapid_ocr_api as api
-            orig_read_yaml = api.read_yaml
-            def patched_yaml(path):
-                cfg = orig_read_yaml(path)
-                cfg['Det']['use_cuda'] = True
-                cfg['Rec']['use_cuda'] = True
-                cfg['Cls']['use_cuda'] = True
-                return cfg
-            api.read_yaml = patched_yaml
+                def patched_yaml(path):
+                    cfg = orig_read_yaml(path)
+                    cfg['Det']['use_cuda'] = True
+                    cfg['Rec']['use_cuda'] = True
+                    cfg['Cls']['use_cuda'] = True
+                    return cfg
+                api.read_yaml = patched_yaml
 
-            instance = api.RapidOCR()
-            det_sess = getattr(getattr(instance.text_detector, 'infer', None), 'session', None)
-            providers = det_sess.get_providers() if det_sess else []
-            if 'CUDAExecutionProvider' in providers:
-                # Warmup dummy inference to verify cuDNN DLLs link cleanly
-                import numpy as np
-                dummy = np.zeros((64, 128, 3), dtype=np.uint8)
-                instance(dummy)
-                _RAPIDOCR_INSTANCE = instance
-                _RAPIDOCR_DEVICE = "GPU (CUDA)"
-                print(f"[OCR] RapidOCR GPU (CUDA) initialized successfully. Providers: {providers}", flush=True)
-                return _RAPIDOCR_INSTANCE
-            else:
-                print(f"[OCR] CUDAExecutionProvider not active ({providers}), falling back to CPU.", flush=True)
+                gpu_instance = api.RapidOCR()
+                det_sess = getattr(getattr(gpu_instance.text_detector, 'infer', None), 'session', None)
+                providers = det_sess.get_providers() if det_sess else []
+                if 'CUDAExecutionProvider' in providers:
+                    # Warmup dummy inference to verify cuDNN DLLs link cleanly without runtime error
+                    import numpy as np
+                    dummy = np.zeros((64, 128, 3), dtype=np.uint8)
+                    gpu_instance(dummy)
+                    _RAPIDOCR_INSTANCE = gpu_instance
+                    _RAPIDOCR_DEVICE = "GPU (CUDA)"
+                    print(f"[OCR] RapidOCR GPU (CUDA) initialized successfully. Providers: {providers}", flush=True)
+                    return _RAPIDOCR_INSTANCE
+                else:
+                    print(f"[OCR] CUDAExecutionProvider not active in session ({providers}), falling back to CPU.", flush=True)
         except Exception as e:
-            print(f"[OCR] GPU init failed ({e}), falling back to CPU.", flush=True)
+            print(f"[OCR] GPU init/warmup failed ({e}), falling back to CPU.", flush=True)
+        finally:
+            # CRITICAL: Always restore original read_yaml so CPU fallback and any other instances never inherit use_cuda=True!
+            api.read_yaml = orig_read_yaml
 
-        # 2. Fallback to CPU
+        # 2. Clean fallback to CPU
         try:
-            from rapidocr_onnxruntime import RapidOCR
-            _RAPIDOCR_INSTANCE = RapidOCR()
+            api.read_yaml = orig_read_yaml
+            cpu_instance = api.RapidOCR()
+            # Warmup dummy inference on CPU to verify it is fully functional
+            import numpy as np
+            dummy = np.zeros((64, 128, 3), dtype=np.uint8)
+            cpu_instance(dummy)
+            _RAPIDOCR_INSTANCE = cpu_instance
             _RAPIDOCR_DEVICE = "CPU"
-            print("[OCR] Using CPU RapidOCR engine.", flush=True)
+            print("[OCR] Using CPU RapidOCR engine (verified & active).", flush=True)
+            return _RAPIDOCR_INSTANCE
         except Exception as e2:
-            print(f"[WARN] RapidOCR init failed completely: {e2}", flush=True)
+            print(f"[WARN] RapidOCR CPU init failed: {e2}", flush=True)
             _RAPIDOCR_INSTANCE = None
             _RAPIDOCR_DEVICE = "Unavailable"
 

@@ -467,7 +467,7 @@ const [fonts, setFonts]     = useState([]);
   const [detectingLogo, setDetectingLogo]   = useState(false);
   const [detectingSub,  setDetectingSub]    = useState(false);
   const [detectingSubTracks, setDetectingSubTracks] = useState(false);
-  const [ocrInfo, setOcrInfo] = useState({ device: 'GPU (CUDA)', is_gpu: true });
+  const [ocrInfo, setOcrInfo] = useState({ device: 'CPU', is_gpu: false });
   const [transcribingSub, setTranscribingSub] = useState(false);
   // ── null ──
   const [bulkSubJob, setBulkSubJob] = useState(null);
@@ -5578,6 +5578,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     try {
                       const res = await post('/detect_subtitle_tracks', { clip_path: currentEditItem.clip_path });
                       const r = await res.json();
+                      if (r.device) setOcrInfo({ device: r.device, is_gpu: r.device.includes('GPU') });
                       if (r.tracks && r.tracks.length > 0) {
                         const newBoxes = r.tracks.map(tr => ({
                           id:         Date.now() + Math.random(),
@@ -5701,6 +5702,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                         bulkSubPollRef.current = setInterval(async () => {
                           try {
                             const s = await fetch(`${API}/detect_subtitle_tracks_bulk/${job_id}`).then(r => r.json());
+                            if (s && s.device) setOcrInfo({ device: s.device, is_gpu: s.device.includes('GPU') });
                             setBulkSubJob(prev => prev?.jobId === job_id ? { ...s, jobId: job_id } : prev);
                             if (s.status === 'done') clearInterval(bulkSubPollRef.current);
                           } catch {/* ── keep polling ── */}

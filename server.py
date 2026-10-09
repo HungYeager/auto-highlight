@@ -4340,6 +4340,13 @@ async def api_detect_subtitle_tracks(req: DetectRequest):
     return {"tracks": mapped_tracks, "device": get_ocr_device()}
 
 
+@app.get("/api/ocr_status")
+@app.get("/api/ocr_info")
+def get_ocr_status_endpoint():
+    dev = get_ocr_device()
+    return {"device": dev, "is_gpu": "GPU" in dev}
+
+
 class BulkSubtitleRequest(BaseModel):
     clip_paths: List[str]     # ordered list matching edit queue indices
     box_mode: str = "delogo"  # blur | delogo
