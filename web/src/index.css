@@ -11,28 +11,28 @@
   font-family: 'Montserrat';
   font-weight: 700;
   font-style: normal;
-  src: url('http://127.0.0.1:8000/api/font/file?key=montserrat') format('truetype');
+  src: url('/api/font/file?key=montserrat') format('truetype');
   font-display: swap;
 }
 @font-face {
   font-family: 'Luckiest Guy';
   font-weight: 400;
   font-style: normal;
-  src: url('http://127.0.0.1:8000/api/font/file?key=luckiestguy') format('truetype');
+  src: url('/api/font/file?key=luckiestguy') format('truetype');
   font-display: swap;
 }
 @font-face {
   font-family: 'Nunito';
   font-weight: 800;
   font-style: normal;
-  src: url('http://127.0.0.1:8000/api/font/file?key=nunito') format('truetype');
+  src: url('/api/font/file?key=nunito') format('truetype');
   font-display: swap;
 }
 @font-face {
   font-family: 'Permanent Marker';
   font-weight: 400;
   font-style: normal;
-  src: url('http://127.0.0.1:8000/api/font/file?key=permanentmarker') format('truetype');
+  src: url('/api/font/file?key=permanentmarker') format('truetype');
   font-display: swap;
 }
 

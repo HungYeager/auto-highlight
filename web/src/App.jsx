@@ -10,7 +10,10 @@ import {
 } from 'lucide-react';
 
 
-const API  = 'http://127.0.0.1:8000/api';
+const API = (typeof window !== 'undefined' && window.location && window.location.origin)
+  ? `${window.location.origin}/api`
+  : '/api';
+
 const post = (url, body) => {
   let serialized = '{}';
   try {
@@ -30,9 +33,10 @@ const post = (url, body) => {
 const toAssetUrl = (url) => {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  if (url.startsWith('/api/')) return `http://127.0.0.1:8000${url}`;
-  if (url.startsWith('/')) return `http://127.0.0.1:8000/api${url}`;
-  return `http://127.0.0.1:8000/api/${url}`;
+  const base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+  if (url.startsWith('/api/')) return `${base}${url}`;
+  if (url.startsWith('/')) return `${base}/api${url}`;
+  return `${base}/api/${url}`;
 };
 
 // ── VirtualList ── renders only visible rows (+ overscan) regardless of total count
@@ -189,7 +193,6 @@ const FONT_OPTIONS = [
 const _fontPreviewCache = new Map(); // module-level cache: key → objectURL
 
 const FontPicker = ({ value, onChange }) => {
-  const API = 'http://127.0.0.1:8000/api';
   const [open, setOpen] = React.useState(false);
   const [previews, setPreviews] = React.useState({});
   const ref = React.useRef(null);

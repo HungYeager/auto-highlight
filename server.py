@@ -148,7 +148,7 @@ app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.6", lifespan=li
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -6120,6 +6120,18 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         import ctypes
         kernel32 = ctypes.windll.kernel32
+
+        # Disable QuickEdit Mode in Windows Console to prevent process freeze on mouse click
+        try:
+            h_stdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE = -10
+            c_mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(h_stdin, ctypes.byref(c_mode)):
+                # ENABLE_QUICK_EDIT_MODE = 0x0040, ENABLE_EXTENDED_FLAGS = 0x0080
+                new_mode = (c_mode.value & ~0x0040) | 0x0080
+                kernel32.SetConsoleMode(h_stdin, new_mode)
+        except Exception:
+            pass
+
         ERROR_ALREADY_EXISTS = 183
         mutex_name = "Local\\OpenCutStudio_SingleInstance_Mutex_v2"
         _SINGLE_INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, mutex_name)
