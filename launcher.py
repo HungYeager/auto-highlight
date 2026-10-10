@@ -627,28 +627,10 @@ class LauncherApp(tk.Tk):
 
         log(f"Port 8000 readiness: {ready} (waited {time.time() - start_wait:.1f}s)")
 
-        # Mở Edge/Chrome ở dạng cửa sổ Desktop app
-        self.set_status("Đang mở giao diện Studio...", 100)
-        time.sleep(0.5)
-
-        url = "http://127.0.0.1:8000"
-        opened = False
-        try:
-            subprocess.Popen(["msedge.exe", f"--app={url}", "--window-size=1440,900"],
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            opened = True
-        except Exception:
-            try:
-                subprocess.Popen(["chrome.exe", f"--app={url}", "--window-size=1440,900"],
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                opened = True
-            except Exception:
-                import webbrowser
-                webbrowser.open(url)
-                opened = True
-
-        log(f"Browser launched: {opened}")
-        time.sleep(2.0)
+        # Engine (OpenCutStudio.exe) tự động mở trình duyệt duy nhất khi sẵn sàng
+        self.set_status("Studio đã sẵn sàng!", 100)
+        log("Studio engine ready. Handing over to OpenCutStudio.")
+        time.sleep(1.0)
         self.destroy()
 
 

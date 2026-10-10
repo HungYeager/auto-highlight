@@ -6113,6 +6113,28 @@ if __name__ == "__main__":
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
+    # ── Single-Instance Mutex (Windows) ────────────────────────────────────────
+    # Prevents launching duplicate server instances and duplicate browser tabs
+    # when users double-click multiple times or start from shortcuts/launchers.
+    _SINGLE_INSTANCE_MUTEX = None
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        mutex_name = "Local\\OpenCutStudio_SingleInstance_Mutex_v2"
+        _SINGLE_INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, mutex_name)
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            print("[OpenCutStudio] Another instance is already running. Bringing existing window to front.", flush=True)
+            # If the user clicked the icon again to re-open the UI, check if port 8000 is listening
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.6)
+                    if s.connect_ex(("127.0.0.1", 8000)) == 0:
+                        webbrowser.open("http://127.0.0.1:8000")
+            except Exception:
+                pass
+            sys.exit(0)
+
     def _find_free_port(start: int = 8000, end: int = 8020) -> int:
         """Probe ports in [start, end) and return the first one not in use.
 
@@ -6137,21 +6159,51 @@ if __name__ == "__main__":
     if PORT != 8000:
         print(f"[OpenCutStudio] Port 8000 is in use — using port {PORT} instead.")
 
+    _BROWSER_OPENED = False
+    _BROWSER_LOCK = threading.Lock()
+
     def _open_browser():
-        time.sleep(1.5)
+        global _BROWSER_OPENED
+        with _BROWSER_LOCK:
+            if _BROWSER_OPENED:
+                return
+            _BROWSER_OPENED = True
+
+        if "--no-browser" in sys.argv or os.environ.get("OPENCUT_NO_BROWSER") == "1":
+            return
+
+        time.sleep(1.2)
         url = f"http://127.0.0.1:{PORT}"
-        try:
-            # Try app window mode in Edge/Chrome for desktop app experience
-            subprocess.Popen(["msedge.exe", f"--app={url}", "--window-size=1440,900"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except Exception:
-            try:
-                subprocess.Popen(["chrome.exe", f"--app={url}", "--window-size=1440,900"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            except Exception:
-                webbrowser.open(url)
+
+        # Try opening as a dedicated desktop app window (Edge or Chrome)
+        opened = False
+        import shutil
+        browser_candidates = [
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            shutil.which("msedge"),
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            shutil.which("chrome"),
+        ]
+
+        for exe in browser_candidates:
+            if exe and os.path.isfile(exe):
+                try:
+                    subprocess.Popen(
+                        [exe, f"--app={url}", "--window-size=1440,900"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
+                    opened = True
+                    break
+                except Exception:
+                    continue
+
+        if not opened:
+            webbrowser.open(url)
 
     threading.Thread(target=_open_browser, daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=PORT, reload=False)
