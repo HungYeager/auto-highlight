@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.5", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.6", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -6070,7 +6070,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.5"
+        local_ver = "2.9.6"
         try:
             from updater import get_local_version
             local_ver = get_local_version()
