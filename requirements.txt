@@ -26,3 +26,9 @@ stable-ts>=2.14.0
 
 # YouTube Visual/Media Downloader & Segment Extractor
 yt-dlp>=2024.08.06
+
+# AI Subtitle Detection & Tracking (GPU Accelerated via DirectML/CUDA)
+onnxruntime-directml>=1.24.0
+rapidocr-onnxruntime>=1.2.3
+shapely>=2.0.0
+pyclipper>=1.3.0

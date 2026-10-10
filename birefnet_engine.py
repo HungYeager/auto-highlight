@@ -112,6 +112,21 @@ def get_onnx_session(progress_cb: Optional[Callable[[float, str], None]] = None)
             except Exception:
                 pass
 
+        # Test DirectML GPU (DirectX 12 on NVIDIA, AMD, Intel)
+        if "DmlExecutionProvider" in avail_providers:
+            try:
+                test_sess = ort.InferenceSession(str(model_path), providers=["DmlExecutionProvider", "CPUExecutionProvider"])
+                inp = test_sess.get_inputs()[0]
+                dummy = np.zeros((1, 3, 256, 256), dtype=np.float32)
+                out_name = test_sess.get_outputs()[0].name
+                test_sess.run([out_name], {inp.name: dummy})
+                _ONNX_SESSION = test_sess
+                _ONNX_MODEL_TYPE = model_type
+                print(f"[BG-Remove] ONNX Session loaded on DirectML GPU: {model_path.name}", flush=True)
+                return _ONNX_SESSION, _ONNX_MODEL_TYPE
+            except Exception:
+                pass
+
         # Fallback to high-performance multi-threaded CPU Execution Provider
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = min(8, os.cpu_count() or 4)

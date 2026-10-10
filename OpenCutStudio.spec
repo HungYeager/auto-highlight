@@ -313,7 +313,7 @@ def _is_unwanted_dll(dest_name: str, src_path: str) -> bool:
     src_lower  = str(src_path).lower()
 
     # Always keep these critical DLL families
-    keep_keywords = ["numpy", "numpy.libs", "onnxruntime", "opencv", "cv2", "shapely"]
+    keep_keywords = ["numpy", "numpy.libs", "onnxruntime", "directml", "opencv", "cv2", "shapely"]
     for kw in keep_keywords:
         if kw in src_lower or kw in dest_lower:
             return False

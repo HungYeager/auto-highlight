@@ -1019,38 +1019,84 @@ def _auto_detect_subtitle_tracks_legacy(video_path: str,
     return merged
 
 
-# ── OCR Engine Singleton (GPU CUDA Accelerated + Automatic CPU Fallback) ──────
+# ── OCR Engine Singleton (Multi-Tier Hardware Acceleration + Safe Fallback) ──────
 # Cached at module level: avoids 0.5-1s re-init on every call.
-# Tries GPU (CUDA) first for 3-8× faster inference; falls back to CPU silently.
+# Multi-Tier Provider Priority:
+#   1. CUDA Execution Provider (NVIDIA CUDA Toolkit & cuDNN runtime)
+#   2. DirectML Execution Provider (DirectX 12 GPU acceleration on NVIDIA GeForce,
+#      AMD Radeon, and Intel Arc/Iris using standard display drivers — zero extra setup!)
+#   3. CPU Execution Provider (Universal fallback on any machine without GPU)
 _RAPIDOCR_INSTANCE = None
 _RAPIDOCR_DEVICE = "CPU"
 _OCR_INIT_LOCK = threading.Lock()
 
 def _setup_cuda_dlls():
-    """Ensure PyTorch CUDA & cuDNN DLLs (e.g. cudnn64_9.dll) are accessible by onnxruntime on Windows."""
+    """Ensure CUDA & cuDNN DLLs (e.g. cudnn64_9.dll, cublas64_12.dll) are accessible by onnxruntime on Windows."""
+    search_dirs = []
+
+    # 1. PyInstaller frozen bundle environment
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass and os.path.isdir(meipass):
+            search_dirs.append(meipass)
+        exe_dir = os.path.dirname(sys.executable)
+        if exe_dir and os.path.isdir(exe_dir):
+            search_dirs.append(exe_dir)
+            search_dirs.append(os.path.join(exe_dir, 'cuda_libs'))
+
+    # 2. Local app directory
+    app_dir = str(Path(__file__).parent)
+    search_dirs.append(app_dir)
+    search_dirs.append(os.path.join(app_dir, 'cuda_libs'))
+
+    # 3. PyTorch CUDA / cuDNN directory if installed
     try:
         import torch
         t_lib = os.path.join(os.path.dirname(torch.__file__), 'lib')
         if os.path.isdir(t_lib):
-            if t_lib not in os.environ.get('PATH', ''):
-                os.environ['PATH'] = t_lib + os.pathsep + os.environ.get('PATH', '')
-            if hasattr(os, 'add_dll_directory'):
-                try:
-                    os.add_dll_directory(t_lib)
-                except Exception:
-                    pass
+            search_dirs.append(t_lib)
     except Exception:
         pass
 
+    # 4. Standard CUDA Toolkit system installations if present
+    cuda_path = os.environ.get('CUDA_PATH', '')
+    if cuda_path and os.path.isdir(cuda_path):
+        search_dirs.append(os.path.join(cuda_path, 'bin'))
+        search_dirs.append(os.path.join(cuda_path, 'bin', 'x64'))
+
+    toolkit_root = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+    if os.path.isdir(toolkit_root):
+        try:
+            for entry in os.listdir(toolkit_root):
+                v_bin = os.path.join(toolkit_root, entry, 'bin')
+                if os.path.isdir(v_bin):
+                    search_dirs.append(v_bin)
+                    search_dirs.append(os.path.join(v_bin, 'x64'))
+        except Exception:
+            pass
+
+    # Prepend discovered directories to PATH and register with AddDllDirectory
+    current_path = os.environ.get('PATH', '')
+    for d in search_dirs:
+        if os.path.isdir(d):
+            if d not in current_path:
+                current_path = d + os.pathsep + current_path
+                os.environ['PATH'] = current_path
+            if hasattr(os, 'add_dll_directory'):
+                try:
+                    os.add_dll_directory(d)
+                except Exception:
+                    pass
+
 def get_ocr_device() -> str:
-    """Return 'GPU (CUDA)' or 'CPU' indicating active OCR engine device."""
+    """Return active OCR engine device (e.g. 'GPU (DirectML)', 'GPU (CUDA)', or 'CPU')."""
     global _RAPIDOCR_DEVICE
     if _RAPIDOCR_INSTANCE is None:
         _get_ocr_engine()
     return _RAPIDOCR_DEVICE
 
 def _get_ocr_engine():
-    """Return cached RapidOCR engine; tries GPU (CUDA) first for ~4-8x faster inference, then CPU."""
+    """Return cached RapidOCR engine with automatic GPU (CUDA / DirectML) acceleration and CPU fallback."""
     global _RAPIDOCR_INSTANCE, _RAPIDOCR_DEVICE
     if _RAPIDOCR_INSTANCE is not None:
         return _RAPIDOCR_INSTANCE
@@ -1060,56 +1106,88 @@ def _get_ocr_engine():
             return _RAPIDOCR_INSTANCE
 
         import rapidocr_onnxruntime.rapid_ocr_api as api
-        orig_read_yaml = getattr(api, '_orig_read_yaml', None)
-        if orig_read_yaml is None:
-            orig_read_yaml = api.read_yaml
-            api._orig_read_yaml = orig_read_yaml
+        import rapidocr_onnxruntime.utils as ocr_utils
+        import onnxruntime as ort
+        import numpy as np
 
-        # 1. Try initializing with GPU (CUDA) if CUDAExecutionProvider is present and functional
-        try:
-            _setup_cuda_dlls()
-            import onnxruntime as ort
-            available_providers = ort.get_available_providers()
-            if 'CUDAExecutionProvider' in available_providers:
+        _setup_cuda_dlls()
+
+        orig_ort_init = getattr(ocr_utils, '_orig_ort_init', None)
+        if orig_ort_init is None:
+            orig_ort_init = ocr_utils.OrtInferSession.__init__
+            ocr_utils._orig_ort_init = orig_ort_init
+
+        available_providers = ort.get_available_providers()
+
+        # ── 1. Try Hardware-Accelerated GPU (CUDA or DirectML) ───────────────────
+        has_gpu_provider = ('CUDAExecutionProvider' in available_providers or 'DmlExecutionProvider' in available_providers)
+        if has_gpu_provider:
+            try:
                 try:
                     ort.set_default_logger_severity(3)
                 except Exception:
                     pass
 
-                def patched_yaml(path):
-                    cfg = orig_read_yaml(path)
-                    cfg['Det']['use_cuda'] = True
-                    cfg['Rec']['use_cuda'] = True
-                    cfg['Cls']['use_cuda'] = True
-                    return cfg
-                api.read_yaml = patched_yaml
+                def _smart_gpu_ort_init(self, config):
+                    sess_opt = ort.SessionOptions()
+                    sess_opt.log_severity_level = 4
+                    sess_opt.enable_cpu_mem_arena = False
+                    sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+                    EP_list = []
+                    # Priority 1: NVIDIA CUDA EP (if available)
+                    if 'CUDAExecutionProvider' in available_providers:
+                        EP_list.append(('CUDAExecutionProvider', {
+                            'device_id': 0,
+                            'arena_extend_strategy': 'kNextPowerOfTwo',
+                            'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                            'do_copy_in_default_stream': True
+                        }))
+                    # Priority 2: DirectML EP (Hardware-accelerated DirectX 12 on NVIDIA GeForce, AMD, Intel)
+                    if 'DmlExecutionProvider' in available_providers:
+                        EP_list.append(('DmlExecutionProvider', {
+                            'device_id': 0,
+                        }))
+                    # Fallback: CPU
+                    EP_list.append(('CPUExecutionProvider', {
+                        'arena_extend_strategy': 'kSameAsRequested',
+                    }))
+
+                    self._verify_model(config['model_path'])
+                    self.session = ort.InferenceSession(config['model_path'], sess_options=sess_opt, providers=EP_list)
+
+                ocr_utils.OrtInferSession.__init__ = _smart_gpu_ort_init
 
                 gpu_instance = api.RapidOCR()
                 det_sess = getattr(getattr(gpu_instance.text_detector, 'infer', None), 'session', None)
                 providers = det_sess.get_providers() if det_sess else []
+
+                # Warmup dummy inference to verify runtime linking
+                dummy = np.zeros((64, 128, 3), dtype=np.uint8)
+                gpu_instance(dummy)
+
                 if 'CUDAExecutionProvider' in providers:
-                    # Warmup dummy inference to verify cuDNN DLLs link cleanly without runtime error
-                    import numpy as np
-                    dummy = np.zeros((64, 128, 3), dtype=np.uint8)
-                    gpu_instance(dummy)
-                    _RAPIDOCR_INSTANCE = gpu_instance
                     _RAPIDOCR_DEVICE = "GPU (CUDA)"
-                    print(f"[OCR] RapidOCR GPU (CUDA) initialized successfully. Providers: {providers}", flush=True)
+                elif 'DmlExecutionProvider' in providers:
+                    _RAPIDOCR_DEVICE = "GPU (DirectML)"
+                else:
+                    _RAPIDOCR_DEVICE = "CPU"
+
+                if "GPU" in _RAPIDOCR_DEVICE:
+                    _RAPIDOCR_INSTANCE = gpu_instance
+                    print(f"[OCR] RapidOCR {_RAPIDOCR_DEVICE} initialized successfully. Providers: {providers}", flush=True)
                     return _RAPIDOCR_INSTANCE
                 else:
-                    print(f"[OCR] CUDAExecutionProvider not active in session ({providers}), falling back to CPU.", flush=True)
-        except Exception as e:
-            print(f"[OCR] GPU init/warmup failed ({e}), falling back to CPU.", flush=True)
-        finally:
-            # CRITICAL: Always restore original read_yaml so CPU fallback and any other instances never inherit use_cuda=True!
-            api.read_yaml = orig_read_yaml
+                    print(f"[OCR] Neither CUDA nor DirectML active in session ({providers}), falling back to pure CPU.", flush=True)
+            except Exception as e:
+                print(f"[OCR] GPU init/warmup failed ({e}), falling back to CPU.", flush=True)
+            finally:
+                ocr_utils.OrtInferSession.__init__ = orig_ort_init
 
-        # 2. Clean fallback to CPU
+        # ── 2. Clean fallback to Pure CPU ─────────────────────────────────────────
         try:
-            api.read_yaml = orig_read_yaml
+            ocr_utils.OrtInferSession.__init__ = orig_ort_init
             cpu_instance = api.RapidOCR()
-            # Warmup dummy inference on CPU to verify it is fully functional
-            import numpy as np
             dummy = np.zeros((64, 128, 3), dtype=np.uint8)
             cpu_instance(dummy)
             _RAPIDOCR_INSTANCE = cpu_instance
