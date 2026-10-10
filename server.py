@@ -4372,16 +4372,10 @@ async def api_detect_subtitle_tracks_bulk(req: BulkSubtitleRequest):
     job_id = uuid.uuid4().hex
 
     device = get_ocr_device()
-    is_gpu = "GPU" in (device or "")
-    if is_gpu:
-        # GPU inference (DirectML / CUDA) processes each frame in ~2-3ms (~1-2s per clip).
-        # Multi-threading on a single GPU causes D3D12/DirectML command allocator collisions,
-        # driver crashes, and VRAM thrashing. Serialized execution (1 worker) achieves maximum
-        # GPU performance with rock-solid stability.
-        max_workers = 1
-    else:
-        # On CPU, allow up to 2 workers to balance frame decoding with inference.
-        max_workers = min(2, max(1, (_os.cpu_count() or 2) // 2))
+    # Concurrency is capped at 4 workers (or half the CPU cores).
+    # Thread safety for GPU DirectML / CUDA inference is guaranteed by _OCR_LOCK in app.py,
+    # allowing multiple clips to decode and process concurrently in parallel without crashing.
+    max_workers = min(4, max(1, (_os.cpu_count() or 2) // 2))
 
     with _bulk_sub_lock:
         _bulk_sub_progress[job_id] = {
