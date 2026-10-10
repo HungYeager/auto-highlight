@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.7", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.8", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -4370,7 +4370,18 @@ async def api_detect_subtitle_tracks_bulk(req: BulkSubtitleRequest):
     """
     import uuid, os as _os
     job_id = uuid.uuid4().hex
-    max_workers = min(4, max(1, (_os.cpu_count() or 2) // 2))
+
+    device = get_ocr_device()
+    is_gpu = "GPU" in (device or "")
+    if is_gpu:
+        # GPU inference (DirectML / CUDA) processes each frame in ~2-3ms (~1-2s per clip).
+        # Multi-threading on a single GPU causes D3D12/DirectML command allocator collisions,
+        # driver crashes, and VRAM thrashing. Serialized execution (1 worker) achieves maximum
+        # GPU performance with rock-solid stability.
+        max_workers = 1
+    else:
+        # On CPU, allow up to 2 workers to balance frame decoding with inference.
+        max_workers = min(2, max(1, (_os.cpu_count() or 2) // 2))
 
     with _bulk_sub_lock:
         _bulk_sub_progress[job_id] = {
@@ -4378,7 +4389,7 @@ async def api_detect_subtitle_tracks_bulk(req: BulkSubtitleRequest):
             "total":        len(req.clip_paths),
             "done":         0,
             "workers":      max_workers,
-            "device":       get_ocr_device(),
+            "device":       device,
             "current_clips": [],          # list of clip names currently in-flight
             "results":      {},           # clip_path → mapped tracks list
             "errors":       {},           # clip_path → error message
@@ -6070,7 +6081,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.7"
+        local_ver = "2.9.8"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

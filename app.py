@@ -1028,7 +1028,7 @@ def _auto_detect_subtitle_tracks_legacy(video_path: str,
 #   3. CPU Execution Provider (Universal fallback on any machine without GPU)
 _RAPIDOCR_INSTANCE = None
 _RAPIDOCR_DEVICE = "CPU"
-_OCR_INIT_LOCK = threading.Lock()
+_OCR_LOCK = threading.RLock()
 
 def _setup_cuda_dlls():
     """Ensure CUDA & cuDNN DLLs (e.g. cudnn64_9.dll, cublas64_12.dll) are accessible by onnxruntime on Windows."""
@@ -1092,7 +1092,9 @@ def get_ocr_device() -> str:
     """Return active OCR engine device (e.g. 'GPU (DirectML)', 'GPU (CUDA)', or 'CPU')."""
     global _RAPIDOCR_DEVICE
     if _RAPIDOCR_INSTANCE is None:
-        _get_ocr_engine()
+        with _OCR_LOCK:
+            if _RAPIDOCR_INSTANCE is None:
+                _get_ocr_engine()
     return _RAPIDOCR_DEVICE
 
 def _get_ocr_engine():
@@ -1101,7 +1103,7 @@ def _get_ocr_engine():
     if _RAPIDOCR_INSTANCE is not None:
         return _RAPIDOCR_INSTANCE
 
-    with _OCR_INIT_LOCK:
+    with _OCR_LOCK:
         if _RAPIDOCR_INSTANCE is not None:
             return _RAPIDOCR_INSTANCE
 
@@ -1270,7 +1272,8 @@ def auto_detect_subtitle_tracks(video_path: str,
 
             if ocr_engine is not None:
                 try:
-                    res, _ = ocr_engine(rgb)
+                    with _OCR_LOCK:
+                        res, _ = ocr_engine(rgb)
                 except Exception as e:
                     print(f"[OCR] Inference warning on frame at {t:.2f}s: {e}", flush=True)
                     res = None
