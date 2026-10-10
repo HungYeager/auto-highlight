@@ -1,6 +1,6 @@
 {
-  "version": "2.9.6",
+  "version": "2.9.7",
   "release_date": "2026-10-10",
-  "changelog": "- Tăng tốc phần cứng AI Subtitle OCR (RapidOCR) trực tiếp trên GPU máy khách qua DirectML (DirectX 12) và CUDA (tự động nhận diện GPU NVIDIA, AMD, Intel Arc chỉ với driver card đồ họa chuẩn, không cần cài CUDA Toolkit)\n- Tối ưu chuỗi ưu tiên AI đa tầng (CUDA -> DirectML -> CPU fallback an toàn), tốc độ xử lý đạt ~3ms/frame\n- Khắc phục triệt để hiện tượng mở bị nhảy 2 tab trình duyệt bằng cơ chế Windows Named Mutex đơn phiên bản (Single-Instance Mutex)\n- Khử trùng lặp mở trình duyệt giữa Bootstrapper Launcher và Studio Server\n- Tăng tốc phần cứng AI Background Removal (BiRefNet) qua GPU DirectML",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.6/OpenCutStudio_v2.9.6.zip"
+  "changelog": "- Tự động kết nối API động theo cổng máy chủ (Port-Agnostic Origin), khắc phục triệt để lỗi 'TypeError: Failed to fetch' và hiện tượng terminal không nhảy log khi server chuyển cổng dự phòng (8001, 8002...)\n- Vô hiệu hóa QuickEdit Mode trên Windows Console chống hiện tượng click chuột vào terminal làm treo/dừng tiến trình ứng dụng\n- Chuẩn hóa CORS Middleware theo W3C Fetch spec\n- Tăng tốc phần cứng AI Subtitle OCR (RapidOCR) trực tiếp trên GPU máy khách qua DirectML (DirectX 12) và CUDA (hỗ trợ NVIDIA, AMD, Intel Arc chỉ với driver chuẩn)\n- Khắc phục hiện tượng nhảy 2 tab trình duyệt bằng cơ chế Windows Named Mutex đơn phiên bản (Single-Instance Mutex)\n- Tăng tốc phần cứng AI Background Removal (BiRefNet) qua GPU DirectML",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.7/OpenCutStudio_v2.9.7.zip"
 }
