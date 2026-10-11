@@ -25,8 +25,8 @@ def test_history_manager_code_generation(tmp_path):
     mgr = YouTubeHistoryManager(str(storage))
 
     day_str = datetime.now().strftime("%d%m")
-    expected_code1 = f"COP{day_str}_01"
-    expected_code2 = f"COP{day_str}_02"
+    expected_code1 = f"COP{day_str}01"
+    expected_code2 = f"COP{day_str}02"
 
     # Register first video
     rec1 = mgr.register_or_get("https://www.youtube.com/watch?v=11111111111", title="Video 1")
@@ -56,13 +56,13 @@ def test_history_manager_code_generation(tmp_path):
     assert res[0]["asset_code"] == expected_code2
 
     # Register third video with custom prefix 'VID'
-    expected_code3 = f"VID{day_str}_01"
+    expected_code3 = f"VID{day_str}01"
     rec3 = mgr.register_or_get("https://www.youtube.com/watch?v=33333333333", title="Video 3", prefix="VID")
     assert rec3["asset_code"] == expected_code3
 
     # Check peek next code with custom prefix
     next_vid = mgr.peek_next_code(prefix="VID")
-    assert next_vid == f"VID{day_str}_02"
+    assert next_vid == f"VID{day_str}02"
 
     # Verify CSV file is generated
     csv_file = tmp_path / "danh_sach_youtube_goc.csv"
@@ -74,9 +74,26 @@ def test_history_manager_code_generation(tmp_path):
     assert expected_code3 in content
     print("All YouTube Manager tests passed successfully!")
 
+def test_naming_convention():
+    from server import format_clip_filename, format_export_filename
+
+    # 1. Raw clip filename formatting
+    assert format_clip_filename("H081060", 1, "Better Put a Ring on This") == "H08106001_Better Put a Ring on This.mp4"
+    assert format_clip_filename("H0810_60", 2, "Better Put a Ring on This") == "H08106002_Better Put a Ring on This.mp4"
+    assert format_clip_filename("H081060", 10, "Better Put a Ring on This") == "H08106010_Better Put a Ring on This.mp4"
+    assert format_clip_filename("", 1, "LocalVideo") == "LocalVideo_clip01.mp4"
+
+    # 2. Export reup filename formatting
+    assert format_export_filename("H08106001_Better Put a Ring on This", "") == "H08106001_Better Put a Ring on This.mp4"
+    assert format_export_filename("H08106001_Better Put a Ring on This", "CẢNH SÁT BẮT CƯỚP") == "H08106001_CẢNH SÁT BẮT CƯỚP.mp4"
+    assert format_export_filename("H0810_60_Better Put a Ring on This_clip1_00-00-00", "") == "H08106001_Better Put a Ring on This.mp4"
+    assert format_export_filename("local_dashcam", "") == "local_dashcam_reup.mp4"
+    print("All Naming Convention tests passed successfully!")
+
 if __name__ == "__main__":
     import tempfile
     test_extract_youtube_id()
     with tempfile.TemporaryDirectory() as td:
         test_history_manager_code_generation(Path(td))
+    test_naming_convention()
 

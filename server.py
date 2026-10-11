@@ -126,6 +126,48 @@ except ImportError:
 import tempfile
 from PIL import Image, ImageFilter, ImageDraw, ImageFont, ImageEnhance
 
+def format_clip_filename(base_code: str, clip_index: int, title: str, suffix: str = ".mp4") -> str:
+    """Format clip filename as H08106001_Title.mp4 without middle underscore."""
+    clean_code = (base_code or "").replace("_", "").strip()
+    clean_title = sanitize(title or "")[:35].strip("_ ")
+    clip_seq = f"{max(1, int(clip_index)):02d}"
+    if clean_code:
+        full_code = f"{clean_code}{clip_seq}"
+        if clean_title:
+            return f"{full_code}_{clean_title}{suffix}"
+        return f"{full_code}{suffix}"
+    if clean_title:
+        return f"{clean_title}_clip{clip_seq}{suffix}"
+    return f"clip_{clip_seq}{suffix}"
+
+def format_export_filename(clip_stem: str, custom_title: str = "", suffix: str = ".mp4") -> str:
+    """Format exported reup filename preserving H08106001_Title.mp4 pattern."""
+    clean_stem = clip_stem.strip()
+
+    # 1. Match modern pattern: e.g. H08106001_Title or H08106001
+    m_new = re.match(r"^([A-Za-z]+[0-9]{8,10})(?:_(.*))?$", clean_stem)
+    if m_new:
+        full_code = m_new.group(1)
+        orig_title = m_new.group(2) or ""
+        final_title = sanitize((custom_title.strip() if custom_title and custom_title.strip() else orig_title))[:45].strip("_ ")
+        return f"{full_code}_{final_title}{suffix}" if final_title else f"{full_code}{suffix}"
+
+    # 2. Match legacy pattern: e.g. H0810_60_Title_clip1_00-00-00
+    m_old = re.match(r"^([A-Za-z]+[0-9]{4})_([0-9]{2,3})(?:_(.*?))?(?:_clip([0-9]+))?(?:_[0-9]{2}-[0-9]{2}-[0-9]{2})?$", clean_stem)
+    if m_old:
+        date_part = m_old.group(1)
+        vid_num = int(m_old.group(2))
+        orig_title = m_old.group(3) or ""
+        clip_num = int(m_old.group(4)) if m_old.group(4) else 1
+        full_code = f"{date_part}{vid_num:02d}{clip_num:02d}"
+        final_title = sanitize((custom_title.strip() if custom_title and custom_title.strip() else orig_title))[:45].strip("_ ")
+        return f"{full_code}_{final_title}{suffix}" if final_title else f"{full_code}{suffix}"
+
+    # 3. Plain local file
+    if custom_title and custom_title.strip():
+        return f"{clean_stem}_{sanitize(custom_title)[:35].strip('_ ')}{suffix}"
+    return f"{clean_stem}_reup{suffix}"
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -143,7 +185,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.9", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.10.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2193,12 +2235,30 @@ def cut_candidate_clip(req: Dict[str, Any]):
         app_state.log(f"❌ Không tạo được raw_cuts folder ({raw_dir}): {e}", "error")
         raise HTTPException(status_code=500, detail=f"Cannot create raw_cuts folder: {e}")
 
+    clip_num = int(chosen.get('id', candidate_idx+1) or (candidate_idx+1))
+    full_clip_code = ""
+    yt_code_val = ""
     if is_yt:
         yt_title = getattr(app_state, "yt_metadata", {}).get(video_path_str, {}).get("title") or "yt_clip"
-        stem = sanitize(yt_title)[:30]
+        prefix = app_state.config.get("youtube_code_prefix", "COP")
+        yt_rec = yt_history_manager.register_or_get(
+            video_path_str,
+            title=yt_title,
+            duration=vid_dur,
+            prefix=prefix,
+            output_folder=str(raw_dir.parent),
+        )
+        yt_code_val = yt_rec.get("asset_code", "")
+        base_code = yt_code_val.replace("_", "") if yt_code_val else ""
+        clean_title = sanitize(final_title or yt_title)[:35]
+        if base_code:
+            dst = raw_dir / format_clip_filename(base_code, clip_num, clean_title)
+            full_clip_code = f"{base_code}{clip_num:02d}"
+        else:
+            dst = raw_dir / f"{clean_title}_clip{clip_num}_{start_ts.replace(':', '-')}.mp4"
     else:
         stem = sanitize(v_path.stem)
-    dst  = raw_dir / f"{stem}_clip{chosen.get('id', candidate_idx+1)}_{start_ts.replace(':', '-')}.mp4"
+        dst  = raw_dir / f"{stem}_clip{clip_num}_{start_ts.replace(':', '-')}.mp4"
     app_state.log(f"✂️  Cắt → {dst}", "info")
 
     def _log(*args, **kwargs):
@@ -2241,6 +2301,8 @@ def cut_candidate_clip(req: Dict[str, Any]):
     if dst.exists():
         size_mb = dst.stat().st_size / 1_048_576
         app_state.log(f"✅ Raw cut saved → {dst.name} ({size_mb:.2f} MB)", "ok")
+        if is_yt and yt_code_val:
+            yt_history_manager.increment_clips(yt_code_val, clip_name=dst.name, output_folder=str(raw_dir.parent))
     else:
         app_state.log(f"⚠️ FFmpeg/yt-dlp chạy xong nhưng file không tồn tại: {dst}", "warn")
 
@@ -2251,6 +2313,7 @@ def cut_candidate_clip(req: Dict[str, Any]):
         "name":       dst.name,
         "title":      final_title,
         "source":     video_path_str if is_yt else v_path.name,
+        "asset_code": full_clip_code or yt_code_val,
         "start_time": start_ts,
         "start_sec":  start_sec,
         "duration":   max(1.0, trim_duration),
@@ -2728,9 +2791,11 @@ def _cut_and_queue_video_candidates(
             output_folder=out_f,
         )
         asset_code = yt_rec.get("asset_code", "")
-        clean_title = sanitize(yt_title)[:25]
-        stem = f"{asset_code}_{clean_title}" if asset_code else clean_title
+        base_code = asset_code.replace("_", "") if asset_code else ""
+        clean_title = sanitize(yt_title)[:35]
+        stem = f"{base_code}_{clean_title}" if base_code else clean_title
     else:
+        base_code = ""
         stem = sanitize(v_path.stem)
         vid_dur = get_video_duration(v_path) or 0.0
 
@@ -2777,7 +2842,13 @@ def _cut_and_queue_video_candidates(
         s = start_sec % 60
         start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
 
-        dst = raw_dir / f"{stem}_clip{chosen.get('id', idx+1)}_{start_ts.replace(':', '-')}.mp4"
+        clip_num = int(chosen.get('id', idx+1) or (idx+1))
+        full_clip_code = ""
+        if base_code:
+            dst = raw_dir / format_clip_filename(base_code, clip_num, clean_title)
+            full_clip_code = f"{base_code}{clip_num:02d}"
+        else:
+            dst = raw_dir / f"{stem}_clip{clip_num}_{start_ts.replace(':', '-')}.mp4"
 
         # Cut / download clip if not already exists on disk with valid size
         if not dst.exists() or dst.stat().st_size < 1000:
@@ -2837,7 +2908,7 @@ def _cut_and_queue_video_candidates(
             "name":      dst.name,
             "title":     title1,
             "source":    video_path if is_yt else v_path.name,
-            "asset_code": asset_code,
+            "asset_code": full_clip_code or asset_code,
             "start_time": start_ts,
             "start_sec":  start_sec,
             "duration":   dur,
@@ -5019,7 +5090,8 @@ def _run_export_worker(req: ExportRequest):
                     target_words = words_json
 
             # Step 3: Full 9:16 portrait render
-            dst = video_dir / f"{clip_name}_reup.mp4"
+            target_name = format_export_filename(clip_stem=clip_name, custom_title=title, suffix=".mp4")
+            dst = video_dir / target_name
             app_state.export_progress["current"] = f"Rendering 9:16 → {dst.name}..."
             try:
                 render_reup(
@@ -5189,8 +5261,12 @@ def _run_queue_export_inner(req: QueueExportRequest, total_overall: int, complet
             except Exception:
                 target_words = words_json
 
-        stem = sanitize(clip_path.stem)
-        dst  = video_dir / f"{stem}_reup.mp4"
+        target_name = format_export_filename(
+            clip_stem=clip_path.stem,
+            custom_title=(item.title or edit_state.get("title") or "").strip(),
+            suffix=".mp4"
+        )
+        dst  = video_dir / target_name
         app_state.export_progress["current"] = f"Rendering {dst.name}..."
 
         tmp_overlay = None
@@ -5676,6 +5752,7 @@ class YouTubeDownloadRequest(BaseModel):
     suggested_titles: List[str] = []
     target: str = "edit"
     prefix: Optional[str] = None
+    clip_index: Optional[int] = None
 
 class YouTubeCookieUploadRequest(BaseModel):
     content: str
@@ -5995,12 +6072,12 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
         output_folder=out_f,
     )
     asset_code = yt_rec.get("asset_code", "")
-
+    base_code = asset_code.replace("_", "") if asset_code else ""
+    clip_num = int(req.clip_index) if req.clip_index is not None and req.clip_index > 0 else (yt_rec.get("clips_count", 0) + 1)
     clean_title = sanitize(req.title) if req.title else "yt_clip"
-    start_clean = req.start_time.replace(":", "-")
-    prefix_str = f"{asset_code}_" if asset_code else ""
-    filename = f"{prefix_str}{clean_title[:20]}_{start_clean}.mp4"
+    filename = format_clip_filename(base_code, clip_num, clean_title)
     output_path = tmp_dir / filename
+    full_clip_code = f"{base_code}{clip_num:02d}" if base_code else ""
 
     try:
         final_path = download_youtube_section(
@@ -6035,7 +6112,7 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
         "path": str(dst_p),
         "name": dst_p.name,
         "source_path": url,
-        "asset_code": asset_code,
+        "asset_code": full_clip_code or asset_code,
         "title": main_title,
         "suggested_titles": req.suggested_titles or ([main_title] if main_title else []),
         "description": "",
@@ -6088,7 +6165,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.9"
+        local_ver = "2.10.0"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

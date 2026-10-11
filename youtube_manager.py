@@ -85,10 +85,10 @@ class YouTubeHistoryManager:
             if curr == 0 and clean_prefix == "COP":
                 curr = self.daily_counters.get(date_key, 0)
             next_idx = curr + 1
-            code = f"{clean_prefix}{day_str}_{next_idx:02d}"
+            code = f"{clean_prefix}{day_str}{next_idx:02d}"
             while code in self.by_code:
                 next_idx += 1
-                code = f"{clean_prefix}{day_str}_{next_idx:02d}"
+                code = f"{clean_prefix}{day_str}{next_idx:02d}"
             return code
 
     def check_url(self, url: str, prefix: str = "COP") -> Dict[str, Any]:
@@ -155,16 +155,17 @@ class YouTubeHistoryManager:
                 self._sync_csv_unlocked(output_folder)
                 return rec
 
-            # Generate unique code for today under this prefix
+            # Generate unique code for today under this prefix (no middle underscore: H081060)
             curr_idx = self.daily_counters.get(counter_key, 0)
             if curr_idx == 0 and clean_prefix == "COP":
                 curr_idx = self.daily_counters.get(date_key, 0)
             curr_idx += 1
-            code = f"{clean_prefix}{day_str}_{curr_idx:02d}"
+            code = f"{clean_prefix}{day_str}{curr_idx:02d}"
             # Ensure no code collision across restarts
-            while code in self.by_code:
+            existing_clean_codes = {c.replace("_", "") for c in self.by_code}
+            while code in self.by_code or code in existing_clean_codes:
                 curr_idx += 1
-                code = f"{clean_prefix}{day_str}_{curr_idx:02d}"
+                code = f"{clean_prefix}{day_str}{curr_idx:02d}"
 
             self.daily_counters[counter_key] = curr_idx
 
@@ -192,6 +193,14 @@ class YouTubeHistoryManager:
             yt_id = yt_id_or_code
             if yt_id in self.by_code:
                 yt_id = self.by_code[yt_id]
+            else:
+                # Support code match without underscore (e.g. H081060 vs H0810_60)
+                clean_target = yt_id.replace("_", "").upper()
+                for c_key, yid in self.by_code.items():
+                    if c_key.replace("_", "").upper() == clean_target:
+                        yt_id = yid
+                        break
+
             if yt_id in self.by_yt_id:
                 rec = self.by_yt_id[yt_id]
                 rec["clips_count"] = rec.get("clips_count", 0) + 1
@@ -210,19 +219,26 @@ class YouTubeHistoryManager:
 
         results = []
         with self.lock:
-            # Check exact code match first
+            # Check exact code match first (support both with and without _)
             upper_q = q.upper()
+            upper_q_clean = upper_q.replace("_", "")
             if upper_q in self.by_code:
                 rec = self.by_yt_id.get(self.by_code[upper_q])
                 if rec:
                     return [rec]
+            for c_key, yid in self.by_code.items():
+                if c_key.replace("_", "").upper() == upper_q_clean:
+                    rec = self.by_yt_id.get(yid)
+                    if rec:
+                        return [rec]
 
             for rec in self.by_yt_id.values():
                 code = rec.get("asset_code", "").lower()
+                clean_code = code.replace("_", "")
                 yt_id = rec.get("yt_id", "").lower()
                 title = rec.get("title", "").lower()
                 url = rec.get("url", "").lower()
-                if q in code or q in yt_id or q in title or q in url:
+                if q in code or q in clean_code or q in yt_id or q in title or q in url:
                     results.append(rec)
 
         # Sort newest first

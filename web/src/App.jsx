@@ -2643,6 +2643,7 @@ const addFiles = async () => {
         suggested_titles: cand.suggested_titles || [],
         target: 'edit',
         prefix: ytCodePrefix || 'COP',
+        clip_index: cand.id || (idx + 1),
       });
       clearInterval(progressTimer);
 
@@ -3100,7 +3101,7 @@ const addFiles = async () => {
                       type="text"
                       value={ytHistorySearch}
                       onChange={e => setYtHistorySearch(e.target.value)}
-                      placeholder="Tra cứu nhanh theo Mã (VD: COP0710_01), Link YouTube, hoặc Tiêu đề video..."
+                      placeholder="Tra cứu nhanh theo Mã (VD: COP071001), Link YouTube, hoặc Tiêu đề video..."
                       className="w-full bg-black/60 border border-gray-700 rounded-xl pl-9 pr-8 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition font-mono"
                     />
                     {ytHistorySearch && (

@@ -1,6 +1,6 @@
 {
-  "version": "2.9.9",
+  "version": "2.10.0",
   "release_date": "2026-10-11",
-  "changelog": "- Khắc phục triệt để lỗi tiêu đề nhập tay biến mất sau một lúc: tự động lưu ngầm lên server (Auto-Sync) và bảo vệ tiêu đề không bị ghi đè bởi cơ chế đồng bộ hàng đợi ngầm\n- Đồng bộ hóa tiêu đề nhập tay trên cả thanh công cụ bên trái và khung gõ trực tiếp trên màn hình xem trước (Canvas Inline Edit)\n- Khắc phục lỗi crash terminal khi chạy Bulk Subtitle trên GPU (DirectML/CUDA), hỗ trợ xử lý song song đa luồng an toàn",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.9/OpenCutStudio_v2.9.9.zip"
+  "changelog": "- Chuẩn hóa định dạng mã định danh và tên file clip (VD: H08106001_TieuDe.mp4): loại bỏ dấu gạch dưới ở giữa mã video (H0810_60 -> H081060) và ghép liền 2 chữ số thứ tự cảnh (01, 02, 03...)\n- Tự động áp dụng quy tắc đặt tên mới đồng bộ cho cả khâu tải/cắt cảnh từ YouTube vào Studio (Raw Cuts) lẫn khi Xuất video thành phẩm (Export Reup)\n- Hiển thị tên file và mã định danh rõ ràng, phân biệt rành mạch từng cảnh trong Windows File Explorer và Studio",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.10.0/OpenCutStudio_v2.10.0.zip"
 }
