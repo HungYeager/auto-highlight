@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.8", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.9.9", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2968,18 +2968,31 @@ class UpdateEditRequest(BaseModel):
 
 @app.post("/api/edit_queue/update")
 def update_edit_queue_item(req: UpdateEditRequest):
-    """Update state/title patch for an item in edit_queue by index."""
+    """Update state/title patch for an item in edit_queue by index or clip_path."""
     with STATE_LOCK:
-        if 0 <= req.index < len(app_state.edit_queue):
+        item = None
+        clip_path = req.patch.get("clip_path")
+        if clip_path:
+            for it in app_state.edit_queue:
+                if (it.get("clip_path") or it.get("path")) == clip_path:
+                    item = it
+                    break
+        if item is None and 0 <= req.index < len(app_state.edit_queue):
             item = app_state.edit_queue[req.index]
+
+        if item is not None:
+            if "clip_path" in req.patch:
+                req.patch.pop("clip_path")
             if "title" in req.patch:
                 item["title"] = req.patch.pop("title")
+                item["title_error"] = False
+                item["title_error_msg"] = ""
             if "state" not in item or not isinstance(item["state"], dict):
                 item["state"] = {}
             item["state"].update(req.patch)
             app_state.save_session()
             return {"status": "ok", "index": req.index, "entry": item}
-        raise HTTPException(status_code=404, detail="Edit queue index out of bounds")
+        raise HTTPException(status_code=404, detail="Edit queue item not found")
 
 
 # ── Batch Management Endpoints ───────────────────────────────────────────────
@@ -6075,7 +6088,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.9.8"
+        local_ver = "2.9.9"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

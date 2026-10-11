@@ -570,6 +570,9 @@ const dragFinalSub  = useRef(null);
   const currentEditItem = editQueue[selEditIdx] || null;
   const editState = { ...DEF, ...(currentEditItem?.state || {}) };
 
+  const editQueueRef = useRef(editQueue);
+  editQueueRef.current = editQueue;
+
   const patchEdit = useCallback((patch) => {
     if (selEditIdx < 0) return;
     setEditQueue(prev => prev.map((item, i) =>
@@ -577,6 +580,45 @@ const dragFinalSub  = useRef(null);
     ));
     post('/edit_queue/update', { index: selEditIdx, patch });
   }, [selEditIdx]);
+
+  // ── Debounced Title Auto-Save & Synchronization ─────────────────────────────────
+  const titleDebounceTimerRef = useRef(null);
+  const pendingTitleUpdatesRef = useRef(new Map()); // clipKey -> { title, time }
+
+  const updateClipTitle = useCallback((idx, newTitle, syncImmediately = false) => {
+    if (idx < 0) return;
+    const cur = editQueueRef.current[idx];
+    const key = cur?.clip_path || cur?.path || idx;
+    pendingTitleUpdatesRef.current.set(key, { title: newTitle, time: Date.now() });
+
+    // 1. Immediately update React state for instant UI & Canvas responsiveness
+    setEditQueue(prev => prev.map((it, i) => i === idx ? {
+      ...it,
+      title: newTitle,
+      title_error: false,
+      title_error_msg: ''
+    } : it));
+
+    // 2. Debounced save to backend / edit_queue
+    if (titleDebounceTimerRef.current) {
+      clearTimeout(titleDebounceTimerRef.current);
+      titleDebounceTimerRef.current = null;
+    }
+
+    const doSync = () => {
+      const p = cur?.clip_path || cur?.path;
+      post('/edit_queue/update', {
+        index: idx,
+        patch: { title: newTitle, ...(p ? { clip_path: p } : {}) }
+      });
+    };
+
+    if (syncImmediately) {
+      doSync();
+    } else {
+      titleDebounceTimerRef.current = setTimeout(doSync, 300);
+    }
+  }, []);
 
   const handleTranscribeSub = useCallback(async () => {
     const vPath = currentEditItem?.clip_path || currentEditItem?.path;
@@ -1291,7 +1333,7 @@ try {
       setEditQueue(prev => { const n = [...prev]; n.splice(entry.idx, 0, entry.item); return n; });
       setSelEditIdx(entry.idx);
     } else if (entry.type === 'setTitle') {
-      setEditQueue(prev => prev.map((it, i) => i === entry.idx ? { ...it, title: entry.prevTitle } : it));
+      updateClipTitle(entry.idx, entry.prevTitle, true);
     }
   }, []);
 
@@ -1390,7 +1432,18 @@ Rules:
         const serverMap = new Map(serverClips.map(c => [c.clip_path || c.path, c]));
         const merged = prev
           .filter(c => serverMap.has(c.clip_path || c.path))
-          .map(c => ({ ...c, ...serverMap.get(c.clip_path || c.path) }));
+          .map(c => {
+            const sc = serverMap.get(c.clip_path || c.path);
+            const key = c.clip_path || c.path;
+            const pending = pendingTitleUpdatesRef.current.get(key);
+            // If user recently modified the title locally within 5s or sync is pending, retain local title
+            const useLocalTitle = pending && (Date.now() - pending.time < 5000);
+            return {
+              ...c,
+              ...sc,
+              title: useLocalTitle ? c.title : (sc.title !== undefined ? sc.title : c.title),
+            };
+          });
         const prevPaths = new Set(prev.map(c => c.clip_path || c.path));
         const added = serverClips.filter(c => !prevPaths.has(c.clip_path || c.path));
         return [...merged, ...added];
@@ -4850,7 +4903,8 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     </button>
                   </div>
                   <textarea value={currentEditItem?.title || ''}
-                    onChange={e => setEditQueue(prev => prev.map((item, i) => i === selEditIdx ? { ...item, title: e.target.value } : item))}
+                    onChange={e => updateClipTitle(selEditIdx, e.target.value)}
+                    onBlur={e => updateClipTitle(selEditIdx, e.target.value, true)}
                     rows={2} className="w-full bg-gray-900 border border-gray-800 rounded-lg p-1.5 text-[10px] text-white outline-none focus:border-indigo-500 resize-none" />
                   
                   {currentEditItem?.title_error && (
@@ -6778,10 +6832,19 @@ const poll = async () => {
                           <textarea autoFocus value={titleText}
                             onChange={(e) => {
                               const newTitle = e.target.value;
-                              setEditQueue(prev => prev.map((item, idx) => idx === selEditIdx ? { ...item, title: newTitle } : item));
+                              updateClipTitle(selEditIdx, newTitle);
                             }}
-                            onBlur={() => setIsEditingTitleInline(false)}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setIsEditingTitleInline(false); } }}
+                            onBlur={(e) => {
+                              updateClipTitle(selEditIdx, e.target.value, true);
+                              setIsEditingTitleInline(false);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                updateClipTitle(selEditIdx, e.target.value, true);
+                                setIsEditingTitleInline(false);
+                              }
+                            }}
                             className="w-full bg-black/90 text-white rounded p-1 outline-none resize-none"
                             style={{ fontFamily, fontSize: `${fontSize}px`, textAlign: editState?.text_align || 'left', lineHeight: editState?.line_height || 1.2, letterSpacing: `${(editState?.letter_spacing ?? 0) * scale}px` }}
                           />
@@ -7814,7 +7877,7 @@ const stTime = ovl.start_time ?? 0;
                   <p className="text-[8px] text-gray-600">Titles -- click to change:</p>
                   {currentEditItem.suggested_titles.map((t, i) => (
                     <button key={i}
-                      onClick={() => setEditQueue(prev => prev.map((item, idx) => idx === selEditIdx ? { ...item, title: t } : item))}
+                      onClick={() => updateClipTitle(selEditIdx, t, true)}
                       className={`w-full text-left px-2 py-1 rounded text-[9px] transition ${currentEditItem.title === t ? 'bg-indigo-600/20 border border-indigo-500/40 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
                       {i + 1}. {t.slice(0, 80)}{t.length > 80 ? "..." : ""}
                     </button>

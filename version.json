@@ -1,6 +1,6 @@
 {
-  "version": "2.9.8",
-  "release_date": "2026-10-10",
-  "changelog": "- Khắc phục triệt để lỗi crash văng terminal khi chạy tính năng 'Bulk Subtitle' trên GPU (DirectML/CUDA)\n- Bổ sung cơ chế đồng bộ luồng OCR Engine Lock (_OCR_LOCK) chống xung đột DirectX 12 command allocator\n- Cho phép Bulk Subtitle chạy song song tối đa 4 video cùng lúc (Parallel Multi-Worker) an toàn 100% không lo văng app\n- Tự động kết nối API động theo cổng máy chủ (Port-Agnostic Origin)\n- Vô hiệu hóa QuickEdit Mode trên Windows Console chống hiện tượng dừng tiến trình khi click chuột",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.8/OpenCutStudio_v2.9.8.zip"
+  "version": "2.9.9",
+  "release_date": "2026-10-11",
+  "changelog": "- Khắc phục triệt để lỗi tiêu đề nhập tay biến mất sau một lúc: tự động lưu ngầm lên server (Auto-Sync) và bảo vệ tiêu đề không bị ghi đè bởi cơ chế đồng bộ hàng đợi ngầm\n- Đồng bộ hóa tiêu đề nhập tay trên cả thanh công cụ bên trái và khung gõ trực tiếp trên màn hình xem trước (Canvas Inline Edit)\n- Khắc phục lỗi crash terminal khi chạy Bulk Subtitle trên GPU (DirectML/CUDA), hỗ trợ xử lý song song đa luồng an toàn",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.9.9/OpenCutStudio_v2.9.9.zip"
 }
