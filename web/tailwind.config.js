@@ -9,14 +9,18 @@ export default {
     extend: {
       colors: {
         studio: {
-          bg: "#090a0f",
-          card: "#12141c",
-          surface: "#1a1d29",
-          border: "#282c3f",
+          canvas: "#07080b",
+          bg: "#0b0d13",
+          panel: "#10121a",
+          card: "#151822",
+          surface: "#1c202e",
+          border: "#23283a",
+          borderLight: "#31374d",
           accent: "#6366f1",
           hover: "#4f46e5",
-          text: "#f3f4f6",
-          muted: "#9ca3af",
+          text: "#f8fafc",
+          muted: "#94a3b8",
+          subtle: "#64748b",
         }
       }
     },

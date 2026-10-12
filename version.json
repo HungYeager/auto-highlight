@@ -1,6 +1,6 @@
 {
-  "version": "2.10.0",
-  "release_date": "2026-10-11",
-  "changelog": "- Chuẩn hóa định dạng mã định danh và tên file clip (VD: H08106001_TieuDe.mp4): loại bỏ dấu gạch dưới ở giữa mã video (H0810_60 -> H081060) và ghép liền 2 chữ số thứ tự cảnh (01, 02, 03...)\n- Tự động áp dụng quy tắc đặt tên mới đồng bộ cho cả khâu tải/cắt cảnh từ YouTube vào Studio (Raw Cuts) lẫn khi Xuất video thành phẩm (Export Reup)\n- Hiển thị tên file và mã định danh rõ ràng, phân biệt rành mạch từng cảnh trong Windows File Explorer và Studio",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.10.0/OpenCutStudio_v2.10.0.zip"
+  "version": "2.11.0",
+  "release_date": "2026-10-12",
+  "changelog": "- Tối ưu Bố cục Studio 3 cột công thái học chuẩn NLE (Hàng đợi bên trái -> Canvas xem trước ở giữa -> Inspector thuộc tính bên phải 320px)\n- Nâng cấp Story Mode: thời lượng video phân tích chuẩn từ 1 phút 30s đến 2 phút (90–120s)\n- Sửa triệt để tính năng Auto Logo: tự động nhận diện và che logo góc tĩnh, chống nhiễu viền đen letterbox, bám dính toạ độ video\n- Tối ưu bảng màu Deep Slate chuẩn phòng dựng, tăng độ tương phản WCAG AA\n- Phân rã kiến trúc mã nguồn modular UI components và API service layer",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.11.0/OpenCutStudio_v2.11.0.zip"
 }

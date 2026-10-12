@@ -51,8 +51,8 @@ APP_VERSION   = "v1.2"
 UPDATE_CHECK_URL = "https://raw.githubusercontent.com/username/repo/main/update_check.json"
 MODEL_NAME    = "gemini-3.5-flash-lite"
 CLIP_DURATION = 16
-MIN_STORY_DUR = 30   # Story Mode: minimum scene duration (seconds)
-MAX_STORY_DUR = 90   # Story Mode: maximum scene duration (seconds)
+MIN_STORY_DUR = 90   # Story Mode: minimum scene duration (1m30s)
+MAX_STORY_DUR = 120  # Story Mode: maximum scene duration (2m00s)
 CONFIG_FILE   = "config.json"
 SUPPORTED_EXT = {".mp4", ".mkv"}
 
@@ -882,42 +882,72 @@ def detect_logo_bbox(video_path: str, sample_frames: int = 40,
     if len(frames) < 5:
         return None
 
-    std_map = np.std(np.stack(frames, axis=0), axis=0)
-    norm    = cv2.normalize(std_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    inv     = 255 - norm                              # low std → high value
+    stack = np.stack(frames, axis=0)
+    std_map = np.std(stack, axis=0)
+    mean_map = np.mean(stack, axis=0)
 
-    thresh_val = np.percentile(inv, 92)
-    mask = (inv >= thresh_val).astype(np.uint8) * 255
+    # Exclude near-black letterbox / pillarbox borders (mean < 15) which naturally have std ~ 0
+    non_black = mean_map >= 15
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    norm = cv2.normalize(std_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    inv = 255 - norm                              # low std → high value
+
+    # If there are active pixels outside black bars, calculate percentile on them
+    if np.any(non_black):
+        valid_inv = inv[non_black]
+        thresh_val = np.percentile(valid_inv, 90) if len(valid_inv) > 100 else np.percentile(inv, 90)
+        mask = ((inv >= thresh_val) & non_black).astype(np.uint8) * 255
+    else:
+        thresh_val = np.percentile(inv, 90)
+        mask = (inv >= thresh_val).astype(np.uint8) * 255
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.dilate(mask, kernel, iterations=2)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
     candidates = []
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        area = w * h
-        if area < 400 or area > 0.25 * width * height:
-            continue
-        score = area
-        if corner_bias:
-            cx, cy = x + w / 2, y + h / 2
-            corners = [(0, 0), (width, 0), (0, height), (width, height)]
-            dist = min(((cx - cx2) ** 2 + (cy - cy2) ** 2) ** 0.5
-                       for cx2, cy2 in corners)
-            dist_norm = dist / ((width ** 2 + height ** 2) ** 0.5)
-            score = area * (1.0 - dist_norm) ** 2
-        candidates.append((score, x, y, w, h))
+
+    def _eval_contours(cnts):
+        cands = []
+        for c in cnts:
+            x, y, w, h = cv2.boundingRect(c)
+            area = w * h
+            if area < 120 or area > 0.20 * width * height:
+                continue
+            # Watermark logos are reasonably compact; skip extreme aspect ratio bars
+            if w / max(1, h) > 8.0 or h / max(1, w) > 8.0:
+                continue
+            score = area
+            if corner_bias:
+                cx, cy = x + w / 2, y + h / 2
+                corners = [(0, 0), (width, 0), (0, height), (width, height)]
+                dist = min(((cx - cx2) ** 2 + (cy - cy2) ** 2) ** 0.5 for cx2, cy2 in corners)
+                dist_norm = dist / ((width ** 2 + height ** 2) ** 0.5)
+                score = area * ((1.0 - dist_norm) ** 2)
+            cands.append((score, x, y, w, h))
+        return cands
+
+    if contours:
+        candidates = _eval_contours(contours)
+
+    # Fallback pass with lower threshold (85th percentile) for faint/semi-transparent logos
+    if not candidates:
+        thresh_fb = np.percentile(inv, 85)
+        mask_fb = (inv >= thresh_fb).astype(np.uint8) * 255
+        if np.any(non_black):
+            mask_fb[~non_black] = 0
+        mask_fb = cv2.morphologyEx(mask_fb, cv2.MORPH_OPEN, kernel)
+        mask_fb = cv2.dilate(mask_fb, kernel, iterations=2)
+        cnts_fb, _ = cv2.findContours(mask_fb, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if cnts_fb:
+            candidates = _eval_contours(cnts_fb)
 
     if not candidates:
         return None
 
     _, x, y, w, h = max(candidates, key=lambda t: t[0])
-    pad = max(14, int(0.12 * max(w, h)))
+    pad = max(10, int(0.12 * max(w, h)))
     return clamp_bbox(x - pad, y - pad, w + 2 * pad, h + 2 * pad, width, height)
 
 

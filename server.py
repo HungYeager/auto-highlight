@@ -4325,13 +4325,25 @@ class DetectRequest(BaseModel):
     clip_path: str
 
 
+def _resolve_clip_path(clip_path: str) -> Path:
+    p = Path(clip_path)
+    if not p.exists():
+        if (Path(__file__).parent / clip_path).exists():
+            return Path(__file__).parent / clip_path
+        elif (Path("output") / clip_path).exists():
+            return Path("output") / clip_path
+    return p
+
+
 def _get_item_state_and_dims(clip_path: str):
     """Retrieve item edit state and original video stream dimensions (vw, vh)."""
-    p = Path(clip_path)
+    p = _resolve_clip_path(clip_path)
     st = {}
+    norm_p = os.path.normpath(str(p)).lower()
     with STATE_LOCK:
         for item in app_state.edit_queue:
-            if item.get("clip_path") == str(p) or item.get("path") == str(p):
+            i_cp = os.path.normpath(str(item.get("clip_path") or item.get("path") or "")).lower()
+            if i_cp == norm_p or (norm_p and i_cp and (norm_p.endswith(os.path.basename(i_cp)) or i_cp.endswith(os.path.basename(norm_p)))):
                 st = item.get("state", {})
                 break
     vw, vh = 1920, 1080
@@ -4349,11 +4361,13 @@ def _get_item_state_and_dims(clip_path: str):
 async def api_detect_logo(req: DetectRequest):
     """
     Analyse a clip using temporal variance to find a static logo / watermark region.
-    Returns mapped {bbox: {x,y,w,h}} in 1080x1920 canvas space or {bbox: null}.
+    Returns mapped {bbox: {x,y,w,h,video_rel,x_rel,y_rel,w_rel,h_rel}} in canvas and video-rel space.
     """
-    p = Path(req.clip_path)
+    p = _resolve_clip_path(req.clip_path)
     if not p.exists():
-        raise HTTPException(status_code=404, detail="Clip not found")
+        raise HTTPException(status_code=404, detail=f"Clip not found: {req.clip_path}")
+
+    st, vw, vh = _get_item_state_and_dims(str(p))
 
     import asyncio
     loop = asyncio.get_event_loop()
@@ -4362,9 +4376,22 @@ async def api_detect_logo(req: DetectRequest):
     if bbox is None:
         return {"bbox": None}
     ox, oy, ow, oh = bbox
-    st, vw, vh = _get_item_state_and_dims(str(p))
     cx, cy, cw, ch = map_tracked_box_to_canvas({"x": ox, "y": oy, "w": ow, "h": oh}, vw, vh, st)
-    return {"bbox": {"x": int(cx), "y": int(cy), "w": int(cw), "h": int(ch)}}
+
+    # Also compute video_rel coordinates so the box tracks video transformations
+    x_rel = round(float(ox) / max(1.0, float(vw)), 4)
+    y_rel = round(float(oy) / max(1.0, float(vh)), 4)
+    w_rel = round(float(ow) / max(1.0, float(vw)), 4)
+    h_rel = round(float(oh) / max(1.0, float(vh)), 4)
+
+    return {
+        "bbox": {
+            "x": int(cx), "y": int(cy), "w": int(cw), "h": int(ch),
+            "video_rel": True,
+            "x_rel": x_rel, "y_rel": y_rel, "w_rel": w_rel, "h_rel": h_rel,
+            "_vw": vw, "_vh": vh
+        }
+    }
 
 
 @app.post("/api/detect_subtitle")

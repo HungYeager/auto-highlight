@@ -38,35 +38,48 @@
 
 @layer utilities {
   .glass-panel {
-    background: rgba(18, 20, 28, 0.75);
+    background: rgba(16, 18, 26, 0.85);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.07);
   }
   
   .glass-card {
-    background: rgba(26, 29, 41, 0.6);
-    backdrop-filter: blur(8px);
+    background: rgba(21, 24, 34, 0.7);
+    backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 255, 255, 0.05);
   }
 
   .glow-button {
-    box-shadow: 0 0 20px rgba(99, 102, 241, 0.35);
+    box-shadow: 0 0 16px rgba(99, 102, 241, 0.28);
+  }
+
+  /* Professional Studio button with subdued border and clear hover */
+  .studio-btn-ghost {
+    background: rgba(21, 24, 34, 0.6);
+    border: 1px solid #23283a;
+    color: #e2e8f0;
+    transition: all 0.15s ease-in-out;
+  }
+  .studio-btn-ghost:hover {
+    background: #1c202e;
+    border-color: rgba(99, 102, 241, 0.45);
+    color: #ffffff;
   }
 }
 
-/* Custom scrollbars */
+/* Custom scrollbars matching dark studio panels */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #0d0e14;
+  background: #0b0d13;
 }
 ::-webkit-scrollbar-thumb {
-  background: #282c3f;
-  border-radius: 3px;
+  background: #23283a;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4f46e5;
+  background: #6366f1;
 }

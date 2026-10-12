@@ -9,327 +9,21 @@ import {
   Play, Clipboard, Search
 } from 'lucide-react';
 
-
-const API = (typeof window !== 'undefined' && window.location && window.location.origin)
-  ? `${window.location.origin}/api`
-  : '/api';
-
-const post = (url, body) => {
-  let serialized = '{}';
-  try {
-    // If body contains React synthetic events or circular references, sanitize
-    serialized = JSON.stringify(body || {});
-  } catch (err) {
-    console.error('JSON serialize error in post:', err);
-    serialized = '{}';
-  }
-  return fetch(`${API}${url}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: serialized,
-  });
-};
-
-const toAssetUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  const base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-  if (url.startsWith('/api/')) return `${base}${url}`;
-  if (url.startsWith('/')) return `${base}/api${url}`;
-  return `${base}/api/${url}`;
-};
-
-// ── VirtualList ── renders only visible rows (+ overscan) regardless of total count
-// itemHeight: fixed px height per row; containerHeight: visible viewport px height
-const VirtualList = ({ items, itemHeight, containerHeight, renderItem, className = '', style = {} }) => {
-  const [scrollTop, setScrollTop] = React.useState(0);
-  const overscan = 6;
-  const totalHeight = items.length * itemHeight;
-  const firstVisible = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
-  const lastVisible  = Math.min(items.length, Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan);
-  const visible      = items.slice(firstVisible, lastVisible);
-
-  return (
-    <div
-      style={{ height: containerHeight, overflowY: 'auto', ...style }}
-      className={className}
-      onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
-    >
-      <div style={{ height: totalHeight, position: 'relative' }}>
-        {visible.map((item, i) => (
-          <div
-            key={firstVisible + i}
-            style={{ position: 'absolute', top: (firstVisible + i) * itemHeight, left: 0, right: 0, height: itemHeight }}
-          >
-            {renderItem(item, firstVisible + i)}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-  // ── Primitives ──
-
-const Slider = ({ label, value, min, max, step = 1, onChange, unit = '' }) => {
-  const isFloat = step < 1;
-  const fmt = v => isFloat ? parseFloat(v).toFixed(2) : String(Math.round(v));
-
-  const [editing, setEditing] = React.useState(false);
-  const [draft,   setDraft]   = React.useState('');
-  const inputRef = React.useRef(null);
-
-  const startEdit = () => {
-    setDraft(fmt(value));
-    setEditing(true);
-    // Focus on next tick after render
-    setTimeout(() => inputRef.current?.select(), 0);
-  };
-
-  const commit = () => {
-    const parsed = isFloat ? parseFloat(draft) : parseInt(draft, 10);
-    if (!isNaN(parsed)) {
-      const clamped = Math.min(max, Math.max(min, parsed));
-      onChange(isFloat ? parseFloat(clamped.toFixed(10)) : clamped);
-    }
-    setEditing(false);
-  };
-
-  const onKeyDown = e => {
-    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
-  };
-
-  return (
-    <div>
-      <div className="flex justify-between mb-0.5">
-        <span className="text-[10px] text-gray-400">{label}</span>
-        {editing ? (
-          <input
-            ref={inputRef}
-            type="number"
-            min={min} max={max} step={step}
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onBlur={commit}
-            onKeyDown={onKeyDown}
-            className="w-14 text-right text-[10px] font-mono bg-indigo-950 border border-indigo-500 rounded px-1 py-0 text-indigo-200 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-          />
-        ) : (
-          <span
-            onClick={startEdit}
-            title="Click để nhập số trực tiếp"
-            className="text-[10px] text-indigo-300 font-mono cursor-text hover:bg-indigo-900/50 hover:text-indigo-200 rounded px-1 transition select-none"
-          >
-            {fmt(value)}{unit}
-          </span>
-        )}
-      </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(isFloat ? parseFloat(e.target.value) : parseInt(e.target.value))}
-        className="w-full h-1 accent-indigo-500" />
-    </div>
-  );
-};
+import { API, post, toAssetUrl } from './utils/api';
+import {
+  VirtualList,
+  Slider,
+  Toggle,
+  ColorPicker,
+  Section,
+  FontPicker,
+  FONT_OPTIONS,
+  Badge
+} from './components/ui';
 
 
-const Toggle = ({ label, value, onChange, icon }) => (
-  <label className="flex items-center justify-between cursor-pointer py-0.5">
-    <span className="flex items-center gap-1.5 text-[11px] text-gray-300">{icon}{label}</span>
-    <div onClick={() => onChange(!value)}
-      className={`w-8 h-4 rounded-full relative cursor-pointer transition-colors ${value ? 'bg-indigo-600' : 'bg-gray-700'}`}>
-      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all ${value ? 'left-[18px]' : 'left-0.5'}`} />
-    </div>
-  </label>
-);
-
-const ColorPicker = ({ label, value, onChange, presets = [] }) => (
-  <div className="flex items-center gap-2">
-    <span className="text-[10px] text-gray-400 flex-1">{label}</span>
-    <input type="color" value={value} onChange={e => onChange(e.target.value)}
-      className="w-6 h-6 rounded cursor-pointer border border-gray-700 bg-transparent" />
-    {presets.map(c => (
-      <button key={c} onClick={() => onChange(c)} style={{ backgroundColor: c }}
-        className={`w-4 h-4 rounded-full border-2 transition ${value === c ? 'border-white' : 'border-transparent'}`} />
-    ))}
-  </div>
-);
-
-const Section = ({ title, icon, children, defaultOpen = false, id, active = false }) => {
-  const [open, setOpen] = useState(defaultOpen);
-  React.useEffect(() => {
-    if (active) setOpen(true);
-  }, [active]);
-  return (
-    <div id={id} className={`border rounded-xl overflow-hidden transition-all scroll-mt-2 ${active ? 'border-indigo-500/70 ring-1 ring-indigo-500/40 shadow-lg' : 'border-gray-800/50'}`}>
-      <button onClick={() => setOpen(p => !p)}
-        className={`w-full flex items-center justify-between px-3 py-2 transition ${active ? 'bg-indigo-950/40 hover:bg-indigo-900/40 text-white' : 'bg-gray-900/60 hover:bg-gray-800/40 text-gray-300'}`}>
-        <span className="flex items-center gap-2 text-[11px] font-semibold">{icon}{title}</span>
-        <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${open ? '' : '-rotate-90'}`} />
-      </button>
-      {open && <div className="px-3 py-2 bg-gray-950/30 space-y-2">{children}</div>}
-    </div>
-  );
-};
-
-// ???? FontPicker: CapCut-style list ?? font name label + rendered preview ????????????????
-const FONT_OPTIONS = [
-  // Bundled fonts — always available, shown first
-  { key: 'montserrat',      label: 'Montserrat',     bundled: true },
-  { key: 'luckiestguy',     label: 'Luckiest Guy',   bundled: true },
-  { key: 'nunito',          label: 'Futura (Nunito)', bundled: true },
-  { key: 'permanentmarker', label: 'Komika Hand',     bundled: true },
-  // System fonts
-  { key: 'impact',   label: 'Impact' },
-  { key: 'bebas',    label: 'Bebas Neue' },
-  { key: 'anton',    label: 'Anton' },
-  { key: 'ariblk',   label: 'Arial Black' },
-  { key: 'arialbd',  label: 'Arial Bold' },
-  { key: 'arial',    label: 'Arial' },
-  { key: 'gothicb',  label: 'Century Gothic' },
-  { key: 'verdanab', label: 'Verdana Bold' },
-  { key: 'segoeuib', label: 'Segoe UI Bold' },
-];
-const _fontPreviewCache = new Map(); // module-level cache: key → objectURL
-
-const FontPicker = ({ value, onChange }) => {
-  const [open, setOpen] = React.useState(false);
-  const [previews, setPreviews] = React.useState({});
-  const ref = React.useRef(null);
-
-  // Helper: fetch + cache a single font preview
-  // ── Text ──
-  // the font's own label rendered in its own typeface (CapCut style)
-  const fetchPreview = React.useCallback((key) => {
-    if (_fontPreviewCache.has(key)) {
-      setPreviews(p => ({ ...p, [key]: _fontPreviewCache.get(key) }));
-      return;
-    }
-    const f = FONT_OPTIONS.find(x => x.key === key);
-    if (!f) return;
-  // ── Encode label as URL ──
-  // param; use taller canvas so descenders aren't clipped
-    const label = encodeURIComponent(f.label);
-    fetch(`${API}/font/preview?key=${key}&text=${label}&size=36&width=240&height=56`)
-      .then(r => r.ok ? r.blob() : null)
-      .then(blob => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        _fontPreviewCache.set(key, url);
-        setPreviews(p => ({ ...p, [key]: url }));
-      })
-      .catch(() => {});
-  }, [API]);
-
-  // ── Pre-fetch selected font on mount so trigger button always shows preview ──
-React.useEffect(() => { fetchPreview(value); }, [value, fetchPreview]);
-
-  // ── Fetch all previews when dropdown opens ──
-React.useEffect(() => {
-    if (!open) return;
-    FONT_OPTIONS.forEach(({ key }) => fetchPreview(key));
-  }, [open, fetchPreview]);
-
-  // Close on outside click
-  React.useEffect(() => {
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  const selected = FONT_OPTIONS.find(f => f.key === value) || FONT_OPTIONS[0];
-
-  // Font row: preview image IS the font name rendered in its own typeface (CapCut style)
-  // Falls back to plain text label while the image is still loading.
-  const FontRow = ({ f, compact = false }) => (
-    <div className="flex items-center gap-1.5 min-w-0 flex-1">
-      {previews[f.key]
-        ? <img
-            src={previews[f.key]}
-            alt={f.label}
-            className={`${compact ? 'h-7' : 'h-9'} object-contain object-left`}
-            style={{ imageRendering: 'crisp-edges', width: compact ? 160 : 200 }}
-          />
-        : <span className={`${compact ? 'text-[9px]' : 'text-[10px]'} text-gray-300`}>{f.label}</span>
-      }
-      {f.bundled && (
-        <span className="text-[6px] font-bold text-violet-400 bg-violet-900/40 px-1 py-0.5 rounded shrink-0 leading-tight">NEW</span>
-      )}
-    </div>
-  );
-
-  return (
-    <div ref={ref} className="relative w-full mb-1.5">
-      {/* ── Trigger button  ── */}
-      <button type="button" onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between bg-gray-900 border border-gray-800 hover:border-indigo-600/60 rounded-lg px-2 py-1.5 text-left transition gap-1"
-      >
-        <FontRow f={selected} compact />
-        <svg className={`w-3 h-3 text-gray-500 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>
-        </svg>
-      </button>
-
-      {/* ── Dropdown list  ── */}
-      {open && (
-        <div className="absolute z-50 left-0 right-0 mt-1 bg-[#0f0f14] border border-gray-800 rounded-xl shadow-2xl overflow-hidden">
-          {/* ── Bundled section header ── */}
-          <div className="px-3 pt-2 pb-0.5">
-            <p className="text-[7px] text-violet-400 uppercase tracking-widest font-bold">✦ Bundled Fonts</p>
-          </div>
-          <div className="overflow-y-auto max-h-56">
-            {FONT_OPTIONS.filter(f => f.bundled).map(f => (
-              <button key={f.key} type="button"
-                onClick={() => { onChange(f.key); setOpen(false); }}
-                className={`w-full flex items-center px-3 py-2 hover:bg-indigo-900/25 transition text-left gap-2 ${
-                  value === f.key ? 'bg-indigo-900/35 border-l-2 border-indigo-500' : 'border-l-2 border-transparent'
-                }`}
-              >
-                <FontRow f={f} />
-                {value === f.key && (
-                  <svg className="w-3 h-3 text-indigo-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                  </svg>
-                )}
-              </button>
-            ))}
-
-            {/* ── System fonts section ── */}
-            <div className="px-3 pt-2 pb-0.5 border-t border-gray-800/60 mt-1">
-              <p className="text-[7px] text-gray-600 uppercase tracking-widest font-bold">System Fonts</p>
-            </div>
-            {FONT_OPTIONS.filter(f => !f.bundled).map(f => (
-              <button key={f.key} type="button"
-                onClick={() => { onChange(f.key); setOpen(false); }}
-                className={`w-full flex items-center px-3 py-2 hover:bg-gray-800/40 transition text-left gap-2 ${
-                  value === f.key ? 'bg-gray-800/50 border-l-2 border-gray-500' : 'border-l-2 border-transparent'
-                }`}
-              >
-                <FontRow f={f} />
-                {value === f.key && (
-                  <svg className="w-3 h-3 text-gray-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                  </svg>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 
-  // ── Status badge ──
-const Badge = ({ status }) => ({
-  done:      <span className="text-[9px] text-emerald-400 flex items-center gap-0.5"><CheckCircle2 className="w-2.5 h-2.5"/>Done</span>,
-  uploading: <span className="text-[9px] text-amber-400 flex items-center gap-0.5 animate-pulse"><RefreshCw className="w-2.5 h-2.5 animate-spin"/>Uploading</span>,
-  analyzing: <span className="text-[9px] text-indigo-400 flex items-center gap-0.5 animate-pulse"><Sparkles className="w-2.5 h-2.5"/>Analyzing</span>,
-  error:     <span className="text-[9px] text-red-400 flex items-center gap-0.5"><AlertCircle className="w-2.5 h-2.5"/>Error</span>,
-  queued:    <span className="text-[9px] text-gray-600">Queued</span>,
-}[status] || <span className="text-[9px] text-gray-600">{status}</span>);
 
   // ── Default edit state ──
 const DEF = {
@@ -3060,7 +2754,7 @@ const addFiles = async () => {
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-white">📖 Story Mode (30–90s)</span>
+                        <span className="text-xs font-bold text-white">📖 Story Mode (90–120s / 1p30s–2p)</span>
                         <input type="radio" checked={ytMode === 'story'} onChange={() => setYtMode('story')} className="accent-red-500" />
                       </div>
                       <p className="text-[10px] text-gray-400">Trích xuất câu chuyện trọn vẹn, phóng sự có mở đầu - cao trào - kết thúc.</p>
@@ -3279,7 +2973,7 @@ const addFiles = async () => {
                           ytMode === 'story' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
                         }`}
                       >
-                        🎥 Story (30–90s)
+                        🎥 Story (90–120s / 1p30s–2p)
                       </button>
                     </div>
 
@@ -4266,12 +3960,12 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
     <div className="flex flex-1 overflow-hidden">
 
       {/* ── Left Sidebar  ── */}
-      <div className="w-52 shrink-0 border-r border-gray-800/70 flex flex-col bg-[#0d0e17] text-xs">
+      <div className="w-60 shrink-0 border-r border-[#23283a] flex flex-col bg-[#10121a] text-xs">
 
         {/* ── API Keys ── */}
-        <div className="border-b border-gray-800/60">
+        <div className="border-b border-[#23283a] bg-[#0e1017]">
           <button onClick={() => setShowKeys(p => !p)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-gray-500 uppercase tracking-widest hover:text-gray-300 transition">
+            className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-slate-300 uppercase tracking-wider hover:text-white transition">
             <Key className="w-3 h-3 text-indigo-400" />API Keys
             <ChevronRight className={`w-3 h-3 ml-auto transition-transform ${showKeys ? 'rotate-90' : ''}`} />
           </button>
@@ -4824,16 +4518,15 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
   // 2: Edit & Export ????????????????????????????????????????????????????????????????????????????????????????????????????
   const EditTab = () => {
     const st = editState;
-    return (
-      <div className="flex flex-1 overflow-hidden">
 
-        {/* Left: Edit controls */}
-        <div className="w-60 shrink-0 border-r border-gray-800/70 bg-[#0d0e17] flex flex-col">
-          <div className="px-3 py-2 border-b border-gray-800/50 shrink-0">
-            <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Edit Settings</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-            {selEditIdx < 0 ? <p className="text-[9px] text-gray-700 text-center py-4">Select a clip from the Edit Queue →</p> : <>
+    // ── 3. Right Column: Property Inspector / Edit Settings ──
+    const renderInspectorSidebar = () => (
+      <div className="w-80 shrink-0 border-l border-[#23283a] bg-[#10121a] flex flex-col">
+        <div className="px-3 py-2 border-b border-[#23283a] bg-[#0e1017] shrink-0">
+          <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Property Inspector</span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
+          {selEditIdx < 0 ? <p className="text-[10px] text-slate-500 text-center py-6">← Chọn clip từ Hàng đợi bên trái để chỉnh sửa</p> : <>
 
               {/* F2: Edit Style Presets */}
               <div className="mb-2 p-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
@@ -4920,6 +4613,30 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                       >
                         {regenningIdx === selEditIdx ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : '🔄 Thử lại ngay'}
                       </button>
+                    </div>
+                  )}
+
+                  {/* Suggested Titles Quick Pills */}
+                  {currentEditItem?.suggested_titles?.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      <span className="text-[9px] text-slate-400 font-medium block">Gợi ý AI (Bấm đổi ngay):</span>
+                      <div className="flex flex-col gap-1 max-h-28 overflow-y-auto pr-0.5">
+                        {currentEditItem.suggested_titles.map((t, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => updateClipTitle(selEditIdx, t, true)}
+                            className={`w-full text-left px-2 py-1 rounded text-[9px] transition truncate ${
+                              currentEditItem.title === t
+                                ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-200 font-semibold'
+                                : 'bg-[#151822] hover:bg-[#1c202e] border border-[#23283a] text-slate-300 hover:text-white'
+                            }`}
+                            title={t}
+                          >
+                            <span className="text-amber-400 font-bold mr-1">#{i + 1}</span>{t}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -5576,13 +5293,37 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                       if (!currentEditItem) return;
                       setDetectingLogo(true);
                       try {
-                        const r = await post('/detect_logo', { clip_path: currentEditItem.clip_path });
-                        if (r.bbox) {
-                          patchEdit({ blur_boxes: [...(st.blur_boxes||[]), { ...r.bbox, id: Date.now(), mode: 'delogo' }] });
-                        } else {
-                          alert('ℹ️ No static logo detected in this clip.');
+                        const clipPath = currentEditItem.clip_path || currentEditItem.path || '';
+                        if (!clipPath) {
+                          alert('Clip chưa có đường dẫn tệp.');
+                          return;
                         }
-                      } catch { alert('Detection failed.'); }
+                        const res = await post('/detect_logo', { clip_path: clipPath });
+                        const r = await res.json();
+                        if (res.ok && r.bbox) {
+                          const newBox = r.bbox.video_rel ? {
+                            x: r.bbox.x_rel,
+                            y: r.bbox.y_rel,
+                            w: r.bbox.w_rel,
+                            h: r.bbox.h_rel,
+                            video_rel: true,
+                            _vw: r.bbox._vw,
+                            _vh: r.bbox._vh,
+                            id: Date.now(),
+                            mode: boxMode || 'delogo'
+                          } : {
+                            ...r.bbox,
+                            id: Date.now(),
+                            mode: boxMode || 'delogo'
+                          };
+                          patchEdit({ blur_boxes: [...(st.blur_boxes || []), newBox] });
+                        } else {
+                          alert(r.detail || 'ℹ️ Không phát hiện thấy logo tĩnh ở các góc video này.');
+                        }
+                      } catch (err) {
+                        console.error('Auto logo error:', err);
+                        alert('Lỗi nhận diện logo: ' + (err.message || String(err)));
+                      }
                       finally { setDetectingLogo(false); }
                     }}
                     className="flex-1 py-1.5 bg-indigo-900/60 hover:bg-indigo-800/70 border border-indigo-700/40 rounded-lg text-[8px] font-bold text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed transition">
@@ -6417,17 +6158,19 @@ const poll = async () => {
             </>}
           </div>
         </div>
+      );
 
-        {/* Center: Live PIL preview */}
-        <div className="flex-1 flex flex-col items-center justify-start bg-[#07080f] gap-3 p-4 overflow-y-auto min-h-0">
+      // ── 2. Center Column: Live PIL preview & Viewport Stage ──
+      const renderCenterCanvas = () => (
+        <div className="flex-1 flex flex-col items-center justify-start bg-[#07080b] gap-2 p-2.5 overflow-y-auto min-h-0">
           {selEditIdx < 0
-            ? <div className="text-center text-gray-800 m-auto"><Film className="w-12 h-12 mx-auto mb-2 opacity-30" /><p className="text-xs">Select a clip from the Edit Queue →</p></div>
+            ? <div className="text-center text-slate-600 m-auto"><Film className="w-12 h-12 mx-auto mb-2 opacity-40 text-slate-500" /><p className="text-xs text-slate-400">← Chọn clip từ Hàng đợi bên trái để mở khung biên tập</p></div>
             : <>
-              <p className="text-[10px] text-gray-500 truncate max-w-xs font-medium shrink-0">{currentEditItem?.title}</p>
+              <p className="text-[11px] text-slate-300 truncate max-w-sm font-medium shrink-0 tracking-tight">{currentEditItem?.title}</p>
               {/* Preview canvas — pointerdown starts drag or blur drawing */}
               {/* Outer wrapper: overflow-hidden, shrink-0 ensures canvas is never squished by flexbox */}
               <div ref={canvasRef}
-                className={`relative shadow-2xl select-none overflow-hidden rounded-2xl shrink-0 ${
+                className={`relative shadow-[0_0_40px_rgba(0,0,0,0.85)] border border-[#23283a]/80 select-none overflow-hidden rounded-2xl shrink-0 ${
                   drawMode ? 'cursor-crosshair ring-2 ring-indigo-500/50' : 'cursor-ns-resize'
                 }`}
                 style={{ width: 324, height: 576 }}
@@ -7871,36 +7614,24 @@ const stTime = ovl.start_time ?? 0;
                   </>
                 );
               })()}
-
-              {/* -- Also show suggested_titles -- */}
-              {currentEditItem?.suggested_titles?.length > 0 && (
-                <div className="w-full max-w-xs space-y-1 shrink-0 pb-4">
-                  <p className="text-[8px] text-gray-600">Titles -- click to change:</p>
-                  {currentEditItem.suggested_titles.map((t, i) => (
-                    <button key={i}
-                      onClick={() => updateClipTitle(selEditIdx, t, true)}
-                      className={`w-full text-left px-2 py-1 rounded text-[9px] transition ${currentEditItem.title === t ? 'bg-indigo-600/20 border border-indigo-500/40 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
-                      {i + 1}. {t.slice(0, 80)}{t.length > 80 ? "..." : ""}
-                    </button>
-                  ))}
-                </div>
-              )}
             </>}
         </div>
+      );
 
-        {/* Right: Edit Queue */}
-        <div className="w-64 shrink-0 border-l border-gray-800/70 bg-[#0d0e17] flex flex-col"
+      // ── 1. Left Column: Media Queue & Batch Manager ──
+      const renderQueueSidebar = () => (
+        <div className="w-72 shrink-0 border-r border-[#23283a] bg-[#10121a] flex flex-col"
           onDragOver={e => e.preventDefault()} onDrop={handleDropTab2}>
 
           {/* ── BATCH TABS / QUẢN LÝ CỤM VIDEO ── */}
-          <div className="px-2.5 py-1.5 border-b border-gray-800/60 bg-gray-950/60 shrink-0">
+          <div className="px-2.5 py-2 border-b border-[#23283a] bg-[#0e1017] shrink-0">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[8px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
-                <Layers className="w-2.5 h-2.5" /> Cụm Video ({batches.length})
+              <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
+                <Layers className="w-3 h-3" /> Cụm Video ({batches.length})
               </span>
               <button
                 onClick={createNewBatch}
-                className="px-1.5 py-0.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 rounded text-[8px] font-semibold text-indigo-200 flex items-center gap-0.5 transition"
+                className="px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 rounded-lg text-[9px] font-semibold text-indigo-200 flex items-center gap-1 transition"
                 title="Tạo thêm cụm video mới">
                 <Plus className="w-2.5 h-2.5" /> Thêm cụm
               </button>
@@ -8237,28 +7968,35 @@ const stTime = ovl.start_time ?? 0;
             {isExporting && <p className="text-[8px] text-emerald-400 text-center truncate">{exportProg.current}</p>}
           </div>
         </div>
-      </div>
-    );
-  };
+      );
+
+      return (
+        <div className="flex flex-1 overflow-hidden">
+          {renderQueueSidebar()}
+          {renderCenterCanvas()}
+          {renderInspectorSidebar()}
+        </div>
+      );
+    };
 
   // ── Main render ──
 return (
-    <div className="flex flex-col h-screen w-screen bg-[#07080f] text-gray-100 overflow-hidden"
+    <div className="flex flex-col h-screen w-screen bg-[#0b0d13] text-slate-100 overflow-hidden"
       style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
 
       {/* ── Header ── */}
-      <header className="shrink-0 h-11 border-b border-gray-800/80 bg-[#0c0d16]/90 px-4 flex items-center justify-between">
+      <header className="shrink-0 h-11 border-b border-[#23283a] bg-[#0e1017] px-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
             <Film className="w-3.5 h-3.5 text-indigo-400" />
           </div>
-          <span className="text-sm font-bold text-white">Viral Bodycam Clipper</span>
-          <span className="text-[10px] text-gray-500 font-mono">v{updateStatus?.local_version || '2.8.6'}</span>
+          <span className="text-sm font-bold text-slate-100 tracking-tight">Viral Bodycam Clipper</span>
+          <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.8.6'}</span>
           {updateStatus?.has_update && (
             <button
               onClick={handleApplyUpdateInApp}
               disabled={updating}
-              className="px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold flex items-center gap-1 hover:border-amber-400 animate-pulse transition"
+              className="px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-bold flex items-center gap-1 hover:border-amber-400 animate-pulse transition"
               title={updateStatus.changelog || 'Bấm để cập nhật bản mới ngay'}
             >
               <span>⚡ Có bản v{updateStatus.remote_version}</span>
@@ -8268,14 +8006,14 @@ return (
         </div>
 
         {/* ── Tabs ── */}
-        <div className="flex bg-gray-900 border border-gray-800/80 rounded-xl p-0.5 gap-0.5">
+        <div className="flex bg-[#151822] border border-[#23283a] rounded-xl p-0.5 gap-0.5 shadow-inner">
           <button onClick={() => setTab('analyze')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-medium transition ${tab === 'analyze' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition ${tab === 'analyze' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}>
             🔍 Analyze &amp; Select
           </button>
           <button onClick={() => setTab('edit')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${tab === 'edit' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
-            ?? Edit &amp; Export
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${tab === 'edit' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}>
+            🎬 Edit &amp; Export
             {editQueue.length > 0 && (
               <span className={`w-4 h-4 rounded-full text-[9px] flex items-center justify-center font-bold ${tab === 'edit' ? 'bg-white/20 text-white' : 'bg-emerald-600 text-white'}`}>{editQueue.length}</span>
             )}
@@ -8286,29 +8024,29 @@ return (
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => { setShowYtModal(true); setYtBatchTab('single'); }}
-            className="px-2.5 py-1 bg-red-950/40 hover:bg-red-900/50 border border-red-700/40 rounded-xl text-red-300 text-xs font-semibold flex items-center gap-1.5 transition shadow-sm hover:border-red-500/60"
+            className="studio-btn-ghost px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition shadow-sm"
             title="Nhập link YouTube và để Gemini soi hình ảnh tìm highlight"
           >
-            <Youtube className="w-3.5 h-3.5 text-red-500" />
+            <Youtube className="w-3.5 h-3.5 text-red-400" />
             <span>YouTube AI</span>
           </button>
 
           <button
             onClick={() => { setShowYtModal(true); setYtBatchTab('history'); }}
-            className="px-2.5 py-1 bg-purple-950/40 hover:bg-purple-900/50 border border-purple-700/40 rounded-xl text-purple-300 text-xs font-semibold flex items-center gap-1.5 transition shadow-sm hover:border-purple-500/60"
+            className="studio-btn-ghost px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition shadow-sm"
             title="Tra cứu mã video (COP0710_01) để lấy lại link YouTube gốc khi clip nổ"
           >
-            <Search className="w-3.5 h-3.5 text-purple-400" />
-            <span>Tra Cứu Mã Video</span>
+            <Search className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Tra Cứu Mã</span>
           </button>
 
           {ytCookiesStatus.has_cookies ? (
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-950/30 border border-emerald-800/40 rounded-xl text-[11px] text-emerald-300">
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-[#151822] border border-[#23283a] rounded-lg text-xs text-slate-300">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               <span>Cookie: Đã nạp</span>
               <button
                 onClick={handleQuickPasteCookiesFromClipboard}
-                className="text-[10px] text-emerald-400 hover:text-emerald-200 underline ml-0.5"
+                className="text-[10px] text-indigo-400 hover:text-indigo-300 underline ml-0.5"
                 title="Dán đè Cookie mới trực tiếp từ Clipboard"
               >
                 Dán mới
@@ -8317,10 +8055,10 @@ return (
           ) : (
             <button
               onClick={handleQuickPasteCookiesFromClipboard}
-              className="px-2.5 py-1 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-600/40 rounded-xl text-amber-300 text-xs font-semibold flex items-center gap-1 transition shadow-sm hover:border-amber-400"
+              className="studio-btn-ghost px-2.5 py-1 border-amber-600/40 text-amber-300 hover:text-amber-200 rounded-lg text-xs font-medium flex items-center gap-1 transition shadow-sm"
               title="Dán nhanh Cookie từ Clipboard (1-Click) để chống bot YouTube"
             >
-              <span>🍪 Dán Cookie (1-Click)</span>
+              <span>🍪 Dán Cookie</span>
             </button>
           )}
         </div>
@@ -8352,7 +8090,7 @@ return (
                           ? 'bg-emerald-600 text-white'
                           : 'text-gray-500 hover:text-gray-300'
                       }`}
-                      title="Tìm cảnh trọn vẹn 30–90s">
+                      title="Tìm cảnh trọn vẹn 1m30s–2m (90–120s)">
                       🎥 Story
                     </button>
                   </div>
