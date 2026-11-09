@@ -185,7 +185,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.12.0", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.13.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -5983,7 +5983,7 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
 # ── Auto-Update API Endpoints ────────────────────────────────────────────────
 @app.get("/api/update/status")
 async def get_update_status():
-    """Kiểm tra nhanh xem có bản cập nhật mới hay không từ Web UI."""
+    """Kiểm tra nhanh xem có bản cập nhật mới hay không từ Web UI (chống cache CDN)."""
     try:
         from updater import get_local_version, get_repo_urls, parse_version, CHECK_TIMEOUT
         import urllib.request
@@ -5992,22 +5992,31 @@ async def get_update_status():
         if not server_url or "YOUR_USERNAME" in server_url:
             return {"configured": False, "local_version": local_ver, "has_update": False}
 
-        req = urllib.request.Request(server_url, headers={"User-Agent": "OpenCutStudio/2.0"})
+        sep = "&" if "?" in server_url else "?"
+        bust_url = f"{server_url}{sep}_t={int(time.time())}"
+        req = urllib.request.Request(
+            bust_url,
+            headers={"User-Agent": "OpenCutStudio/2.13", "Cache-Control": "no-cache, no-store, must-revalidate"}
+        )
         with urllib.request.urlopen(req, timeout=CHECK_TIMEOUT) as resp:
             remote_data = json.loads(resp.read().decode("utf-8"))
 
         remote_ver = remote_data.get("version", local_ver)
+        min_req_ver = remote_data.get("min_required_version", remote_ver)
         has_update = parse_version(remote_ver) > parse_version(local_ver)
+        force_update = bool(remote_data.get("force_update", True)) or (parse_version(local_ver) < parse_version(min_req_ver))
         return {
             "configured": True,
             "local_version": local_ver,
             "remote_version": remote_ver,
+            "min_required_version": min_req_ver,
             "has_update": has_update,
+            "force_update": force_update,
             "changelog": remote_data.get("changelog", ""),
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.12.0"
+        local_ver = "2.13.0"
         try:
             from updater import get_local_version
             local_ver = get_local_version()
@@ -6017,14 +6026,35 @@ async def get_update_status():
 
 @app.post("/api/update/apply")
 async def trigger_update_apply():
-    """Kích hoạt tải và cập nhật bản mới từ Web UI."""
+    """Kích hoạt tải và cập nhật bản mới từ Web UI (hỗ trợ cả Launcher .exe và môi trường Source)."""
     try:
-        py_exe = sys.executable
-        venv_py = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
-        if os.path.exists(venv_py):
-            py_exe = venv_py
-        res = subprocess.run([py_exe, "updater.py"], capture_output=True, text=True, timeout=60)
-        return {"status": "ok", "output": res.stdout}
+        # 1. Nếu đang chạy thông qua bộ cài Launcher (%LOCALAPPDATA%\OpenCutStudio), gọi trực tiếp Launcher để tự tải bản mới & xóa sạch bản cũ
+        local_app_data = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+        install_dir = os.path.join(local_app_data, "OpenCutStudio")
+        launcher_record = os.path.join(install_dir, "launcher_path.txt")
+        if os.path.exists(launcher_record):
+            try:
+                with open(launcher_record, "r", encoding="utf-8") as f:
+                    launcher_exe = f.read().strip()
+                if launcher_exe and os.path.exists(launcher_exe) and os.path.abspath(launcher_exe).lower() != os.path.abspath(sys.executable).lower():
+                    subprocess.Popen([launcher_exe], cwd=os.path.dirname(launcher_exe))
+                    return {"status": "ok", "mode": "launcher", "output": "Đã kích hoạt trình nâng cấp tự động Launcher!"}
+            except Exception as le:
+                print(f"[Update] Launcher trigger warning: {le}")
+
+        # 2. Nếu chạy từ môi trường source / .venv
+        if not getattr(sys, "frozen", False):
+            py_exe = sys.executable
+            venv_py = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
+            if os.path.exists(venv_py):
+                py_exe = venv_py
+            res = subprocess.run([py_exe, "updater.py"], capture_output=True, text=True, timeout=60)
+            return {"status": "ok", "mode": "source", "output": res.stdout}
+
+        # 3. Dự phòng cho bản frozen .exe: gọi trực tiếp check_and_apply_update
+        from updater import check_and_apply_update
+        await asyncio.to_thread(check_and_apply_update)
+        return {"status": "ok", "mode": "direct", "output": "Đã cập nhật thành công!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

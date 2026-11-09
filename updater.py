@@ -65,10 +65,10 @@ def get_local_version() -> str:
             try:
                 with open(v_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data.get("version", "2.12.0")
+                    return data.get("version", "2.13.0")
             except Exception:
                 pass
-    return "2.12.0"
+    return "2.13.0"
 
 def get_repo_urls():
     """Lấy link version.json và link tải zip từ updater_config.json hoặc UPDATE_SERVER_URL."""
@@ -110,9 +110,12 @@ def check_and_apply_update():
     print("[Update] Dang kiem tra ban cap nhat...", end=" ", flush=True)
 
     try:
+        import time as _time
+        sep = "&" if "?" in server_url else "?"
+        bust_url = f"{server_url}{sep}_t={int(_time.time())}"
         req = urllib.request.Request(
-            server_url,
-            headers={"User-Agent": "OpenCutStudio-Updater/2.0"}
+            bust_url,
+            headers={"User-Agent": "OpenCutStudio-Updater/2.2", "Cache-Control": "no-cache"}
         )
         with urllib.request.urlopen(req, timeout=CHECK_TIMEOUT) as resp:
             remote_data = json.loads(resp.read().decode("utf-8"))
@@ -132,13 +135,15 @@ def check_and_apply_update():
         print(f"  Noi dung moi:\n{changelog}")
     print("=" * 60)
 
-    download_url = remote_data.get("download_url") or auto_download_url
+    download_url = remote_data.get("source_url") or auto_download_url
     if not download_url:
         if "raw.githubusercontent.com" in server_url:
             parts = server_url.replace("https://raw.githubusercontent.com/", "").split("/")
             if len(parts) >= 2:
                 user, repo = parts[0], parts[1]
                 download_url = f"https://github.com/{user}/{repo}/archive/refs/heads/main.zip"
+    if not download_url:
+        download_url = remote_data.get("download_url")
 
     if not download_url:
         print("[Update] Khong tim thay link tai ban cap nhat. Bo qua.")
@@ -161,6 +166,13 @@ def check_and_apply_update():
             return
 
         print("[Update] Dang giai nen va cap nhat file...")
+        # Dọn sạch thư mục web/dist/assets cũ để tránh tồn đọng bundle JS/CSS của bản cũ
+        old_assets_dir = os.path.join("web", "dist", "assets")
+        if os.path.isdir(old_assets_dir):
+            try:
+                shutil.rmtree(old_assets_dir, ignore_errors=True)
+            except Exception:
+                pass
         with zipfile.ZipFile(temp_zip, "r") as zf:
             # GitHub archive zip luôn có thư mục gốc dạng: repo-main/...
             namelist = zf.namelist()

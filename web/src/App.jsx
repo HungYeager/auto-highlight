@@ -2038,25 +2038,39 @@ const addFiles = async () => {
 
   const checkAppUpdate = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/update/status`).then(r => r.json());
+      const res = await fetch(`${API}/update/status?_t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json());
       setUpdateStatus(res);
     } catch {}
   }, []);
 
   useEffect(() => {
     checkAppUpdate();
+    const timer = setInterval(checkAppUpdate, 180000);
+    const onFocus = () => checkAppUpdate();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [checkAppUpdate]);
 
-  const handleApplyUpdateInApp = async () => {
-    if (!confirm(`Tải và cập nhật lên phiên bản ${updateStatus?.remote_version || 'mới'}?\nSau khi cập nhật xong, hãy khởi động lại ứng dụng để sử dụng.`)) return;
+  const handleApplyUpdateInApp = async (skipConfirm = false) => {
+    if (!skipConfirm && !updateStatus?.force_update) {
+      if (!confirm(`Tải và cập nhật lên phiên bản ${updateStatus?.remote_version || 'mới'}?\nSau khi cập nhật xong, hãy khởi động lại ứng dụng để sử dụng.`)) return;
+    }
     setUpdating(true);
     try {
       const res = await post('/update/apply', {});
       if (res.ok) {
-        alert('🎉 Cập nhật thành công! Vui lòng đóng và mở lại run.bat để chạy phiên bản mới nhất.');
+        const data = await res.json().catch(() => ({}));
+        if (data.mode === 'launcher') {
+          alert(`🚀 Trình khởi chạy Launcher đã được kích hoạt để tải bản v${updateStatus?.remote_version || 'mới'} và xóa sạch bản cũ!\n\nVui lòng nhìn cửa sổ OpenCut Bodycam Studio trên màn hình máy tính để theo dõi tiến trình cập nhật.`);
+        } else {
+          alert('🎉 Cập nhật thành công! Vui lòng đóng và mở lại ứng dụng (hoặc bấm lại vào Launcher 1-click) để chạy phiên bản mới nhất.');
+        }
         checkAppUpdate();
       } else {
-        alert('Cập nhật chưa thành công. Vui lòng kiểm tra lại kết nối mạng.');
+        alert('Cập nhật chưa thành công. Vui lòng tắt ứng dụng và mở lại bằng file Launcher 1-Click để tự động nâng cấp.');
       }
     } catch (e) {
       alert(`Lỗi cập nhật: ${e.message}`);
@@ -7117,10 +7131,10 @@ return (
             <Film className="w-3.5 h-3.5 text-indigo-400" />
           </div>
           <span className="text-sm font-bold text-slate-100 tracking-tight">Viral Bodycam Clipper</span>
-          <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.8.6'}</span>
+          <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.13.0'}</span>
           {updateStatus?.has_update && (
             <button
-              onClick={handleApplyUpdateInApp}
+              onClick={() => handleApplyUpdateInApp(false)}
               disabled={updating}
               className="px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-bold flex items-center gap-1 hover:border-amber-400 animate-pulse transition"
               title={updateStatus.changelog || 'Bấm để cập nhật bản mới ngay'}
@@ -7344,6 +7358,49 @@ return (
 
       {/* ── YouTube Direct Visual Analysis & Segment Download Modal ── */}
       {renderYouTubeModal()}
+
+      {/* ── Mandatory Force-Update Gate Modal (Khóa phiên bản cũ bắt buộc nâng cấp) ── */}
+      {updateStatus?.has_update && updateStatus?.force_update !== false && (
+        <div className="fixed inset-0 z-[9999] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-[#111420] border-2 border-amber-500/50 rounded-2xl shadow-2xl p-6 text-slate-100 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-2xl shrink-0">
+                🚀
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white">Bắt buộc cập nhật phiên bản mới v{updateStatus.remote_version}</h2>
+                <p className="text-xs text-amber-300 font-mono mt-0.5">
+                  Phiên bản hiện tại: v{updateStatus.local_version} ➔ Bản mới bắt buộc: v{updateStatus.remote_version}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#0b0d14] border border-slate-800 rounded-xl p-3.5 text-xs text-slate-300 space-y-1.5 max-h-56 overflow-y-auto whitespace-pre-line leading-relaxed">
+              <p className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider mb-1">Nội dung nâng cấp:</p>
+              {updateStatus.changelog || 'Nâng cấp hiệu năng, sửa lỗi và đồng bộ tính năng mới nhất.'}
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Phiên bản cũ <span className="text-slate-200 font-semibold">v{updateStatus.local_version}</span> đã ngừng hoạt động để đảm bảo đồng bộ toàn hệ thống. Hệ thống sẽ tự động tải bản mới và xóa sạch bản cũ trên máy.
+            </p>
+
+            <button
+              onClick={() => handleApplyUpdateInApp(true)}
+              disabled={updating}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 disabled:opacity-50 text-black font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-950/50 flex items-center justify-center gap-2 transition"
+            >
+              {updating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Đang kích hoạt trình nâng cấp & xóa bản cũ...</span>
+                </>
+              ) : (
+                <span>⚡ Cập Nhật Ngay Lên Bản v{updateStatus.remote_version}</span>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

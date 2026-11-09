@@ -25,6 +25,8 @@ if not exist "config.json" (
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 
+"%PY_EXE%" -X utf8 updater.py
+
 echo [1/2] Starting FastAPI server at http://127.0.0.1:8000 ...
 echo [2/2] Opening OpenCut Studio in browser...
 echo.

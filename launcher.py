@@ -150,6 +150,12 @@ class LauncherApp(tk.Tk):
         self.install_dir = get_install_dir()
         self.github_repo = get_repo_url(self.install_dir)
         self.version_file = os.path.join(self.install_dir, "version.txt")
+        try:
+            launcher_exe_path = os.path.abspath(sys.argv[0])
+            with open(os.path.join(self.install_dir, "launcher_path.txt"), "w", encoding="utf-8") as f:
+                f.write(launcher_exe_path)
+        except Exception:
+            pass
 
         # Cấu hình cửa sổ Launcher
         self.title(APP_NAME)
@@ -285,15 +291,16 @@ class LauncherApp(tk.Tk):
             pass
 
     def fetch_latest_release(self):
-        """Lấy thông tin Release mới nhất từ GitHub API (chống cache CDN và sắp xếp semver chuẩn)."""
+        """Lấy thông tin Release mới nhất từ GitHub API + dự phòng raw version.json (không giới hạn 60 req/giờ)."""
         repo_clean = self.github_repo.replace("https://github.com/", "").replace("http://github.com/", "").rstrip("/")
         headers = {
-            "User-Agent": "OpenCutLauncher/2.1",
+            "User-Agent": "OpenCutLauncher/2.2",
             "Accept": "application/vnd.github.v3+json",
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache"
         }
 
+        api_release = None
         # 1. Thử lấy danh sách releases có timestamp chống CDN cache
         try:
             ts = int(time.time())
@@ -302,22 +309,70 @@ class LauncherApp(tk.Tk):
             with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
                 releases = json.loads(resp.read().decode("utf-8"))
                 if isinstance(releases, list) and releases:
-                    valid = [r for r in releases if not r.get("draft", False)]
+                    valid = [r for r in releases if not r.get("draft", False) and any(a.get("name", "").lower().endswith(".zip") for a in r.get("assets", []))]
                     if valid:
                         valid.sort(key=lambda r: parse_semver(r.get("tag_name", "")), reverse=True)
-                        return valid[0]
+                        api_release = valid[0]
         except Exception as e:
-            print(f"[Launcher] Releases list fetch error: {e}")
+            log(f"[Launcher] Releases list fetch error: {e}")
 
         # 2. Fallback sang /releases/latest nếu danh sách lỗi
+        if not api_release:
+            try:
+                api_url = f"https://api.github.com/repos/{repo_clean}/releases/latest"
+                req = urllib.request.Request(api_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
+                    cand = json.loads(resp.read().decode("utf-8"))
+                    if cand and any(a.get("name", "").lower().endswith(".zip") for a in cand.get("assets", [])):
+                        api_release = cand
+            except Exception as e:
+                log(f"[Launcher] Release latest fetch error: {e}")
+
+        # 3. Kiểm tra raw version.json (Không bị giới hạn 60 lần/giờ của GitHub API khi nhiều máy chung IP)
+        raw_release = None
         try:
-            api_url = f"https://api.github.com/repos/{repo_clean}/releases/latest"
-            req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=TIMEOUT_CHECK) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            ts = int(time.time())
+            raw_url = f"https://raw.githubusercontent.com/{repo_clean}/main/version.json?_t={ts}"
+            req_raw = urllib.request.Request(raw_url, headers={"User-Agent": "OpenCutLauncher/2.2", "Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req_raw, timeout=TIMEOUT_CHECK) as resp:
+                vdata = json.loads(resp.read().decode("utf-8"))
+                ver = str(vdata.get("version", "")).strip().lstrip("vV")
+                dl_url = str(vdata.get("download_url", "")).strip()
+                if ver and not dl_url:
+                    dl_url = f"https://github.com/{repo_clean}/releases/download/v{ver}/OpenCutStudio_v{ver}.zip"
+                if ver and dl_url:
+                    raw_release = {
+                        "tag_name": f"v{ver}",
+                        "assets": [{
+                            "name": os.path.basename(dl_url) or f"OpenCutStudio_v{ver}.zip",
+                            "browser_download_url": dl_url,
+                            "size": 0
+                        }]
+                    }
         except Exception as e:
-            print(f"[Launcher] Release latest fetch error: {e}")
-            return None
+            log(f"[Launcher] Raw version.json fetch error: {e}")
+
+        if api_release and raw_release:
+            api_ver = parse_semver(api_release.get("tag_name", ""))
+            raw_ver = parse_semver(raw_release.get("tag_name", ""))
+            if raw_ver > api_ver:
+                # Kiểm tra nhanh xem file zip trên Releases của raw_release đã tải lên xong chưa
+                try:
+                    dl_test = raw_release["assets"][0]["browser_download_url"]
+                    probe_req = urllib.request.Request(dl_test, headers={"User-Agent": "OpenCutLauncher/2.2", "Range": "bytes=0-0"})
+                    with urllib.request.urlopen(probe_req, timeout=6) as p_resp:
+                        cr = p_resp.headers.get("Content-Range", "")
+                        if "/" in cr:
+                            try:
+                                raw_release["assets"][0]["size"] = int(cr.split("/")[-1])
+                            except Exception:
+                                pass
+                        return raw_release
+                except Exception:
+                    return api_release
+            return api_release
+
+        return api_release or raw_release
 
     def bootstrap_thread(self):
         try:
@@ -475,6 +530,13 @@ class LauncherApp(tk.Tk):
                         if resp_code == 200 and existing_bytes > 0 and downloaded > 0:
                             file_mode = "wb"
                             downloaded = 0
+                        if total_bytes == 0:
+                            try:
+                                cl = int(resp.headers.get("Content-Length", "0"))
+                                if cl > 0:
+                                    total_bytes = downloaded + cl
+                            except Exception:
+                                pass
 
                         with open(zip_path, file_mode) as out_f:
                             block_size = 256 * 1024
@@ -523,10 +585,34 @@ class LauncherApp(tk.Tk):
         log("Calling kill_running_engine before extraction...")
         kill_running_engine(self.install_dir)
 
-        # 5. Giải nén Engine vào thư mục app
-        self.set_status(f"Đang chuẩn bị giải nén bộ Engine v{tag_version}...", 86)
+        # 5. Xóa sạch bản cũ trong thư mục app (chỉ giữ lại dữ liệu cá nhân) trước khi giải nén Engine mới
+        self.set_status(f"Đang dọn dẹp bản cũ & giải nén Engine v{tag_version}...", 86)
         app_dir = os.path.join(self.install_dir, "app")
         os.makedirs(app_dir, exist_ok=True)
+        preserved_names = {
+            "config.json",
+            "cookies.txt",
+            "session_data.json",
+            "youtube_history.json",
+            "danh_sach_youtube_goc.csv",
+            "output_clips",
+            "raw_cuts",
+        }
+        try:
+            if zipfile.is_zipfile(target_zip_to_extract):
+                for item in os.listdir(app_dir):
+                    if item in preserved_names:
+                        continue
+                    item_path = os.path.join(app_dir, item)
+                    try:
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path, ignore_errors=True)
+                        else:
+                            os.remove(item_path)
+                    except Exception as clean_err:
+                        log(f"Clean old item warning ({item}): {clean_err}")
+        except Exception as e:
+            log(f"Pre-extract cleanup warning: {e}")
 
         extracted_ok = False
         try:
