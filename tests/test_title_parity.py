@@ -38,8 +38,9 @@ class TestTitleParity(unittest.TestCase):
         ]
         self.assertEqual(lines, expected_lines)
 
-    def test_make_title_image_with_title_lines(self):
-        """Verify _make_title_image accepts title_lines and generates output PNG."""
+    def test_make_title_image_with_matching_title_lines(self):
+        """Verify _make_title_image accepts matching title_lines and generates output PNG."""
+        full_title = "She hugged her crying friend goodbye during the chaotic nighttime encounter, but wait until you see where she gets escorted next!"
         custom_lines = [
             "She hugged her crying friend",
             "goodbye during the chaotic",
@@ -48,7 +49,7 @@ class TestTitleParity(unittest.TestCase):
             "gets escorted next!"
         ]
         img_path = _make_title_image(
-            title="She hugged her crying friend...",
+            title=full_title,
             font_name="montserrat",
             font_size=60,
             box_mode="capcut",
@@ -56,6 +57,28 @@ class TestTitleParity(unittest.TestCase):
             box_opacity=100,
             text_color_hex="#ffffff",
             title_lines=custom_lines,
+        )
+        self.assertIsNotNone(img_path)
+        self.assertTrue(Path(img_path).exists())
+        if Path(img_path).exists():
+            Path(img_path).unlink(missing_ok=True)
+
+    def test_make_title_image_mismatched_title_lines_falls_back(self):
+        """Verify _make_title_image ignores foreign/stale title_lines that do not match title."""
+        full_title = "Completely different video title here"
+        foreign_lines = [
+            "She hugged her crying friend",
+            "gets escorted next!"
+        ]
+        img_path = _make_title_image(
+            title=full_title,
+            font_name="montserrat",
+            font_size=60,
+            box_mode="capcut",
+            box_bg_color_hex="#001eb3",
+            box_opacity=100,
+            text_color_hex="#ffffff",
+            title_lines=foreign_lines,
         )
         self.assertIsNotNone(img_path)
         self.assertTrue(Path(img_path).exists())

@@ -18,18 +18,25 @@ FORBIDDEN -- NEVER use these generic phrases or any variation of them:
   X "wait until you see what happens next"
   X any phrase that works for ANY bodycam video
 
-FORMAT:
+LENGTH & FORMAT:
+  - STRICT LENGTH: Keep titles concise and punchy — target 10 to 14 words (STRICT MAXIMUM 15 words). Never write long, bloated titles.
+  - Cut all filler words, long setups, and unnecessary preambles. Deliver the specific incident and punchline fast.
   - 100% ENGLISH -- sensational, clickbaity, suspenseful, slightly rage-baiting.
-  - Structure: "[Specific thing the suspect did/said in THIS video], but wait until you see [the specific shocking outcome, reason, or consequence in THIS video]!"
+  - Structure: "[Specific suspect action in THIS video], but wait until you see [shocking outcome/charge]!" OR "[Specific action] right before [instant karma/consequence]!"
   - DO NOT include any Call-To-Action (CTA) emojis or phrases at the end (no "👉 Check comments...", no "👉 Follow..."). Keep titles clean and focused purely on the viral story hook.
 
-GOOD (specific -- references what actually happened):
-  "She threw her drink at the officer during the traffic stop, but wait until you see the exact charge that ended her night!"
+GOOD (specific, concise, 10–14 words):
+  "She threw her drink at the officer, but wait until you see the felony charge!" (15 words)
+  "He yelled 'you can't search me' seconds before the K9 hit his car!" (13 words)
+  "She refused to drop the weapon, but wait until you see what stopped her!" (14 words)
+  "He handed over a fake ID, but the officer caught the lie instantly!" (13 words)
+  "She screamed illegal detention, but wait until you see what the search revealed!" (13 words)
+  "He ran two red lights, but the plate check exposed his biggest secret!" (13 words)
+  "She bit the arresting officer, picking up two shocking felony charges!" (11 words)
 
-GOOD (karma -- instant payoff):
-  "He screamed 'I know my rights, you can't search me!' right before the K9 sat down next to his door, but wait until you see what the dog found in 10 seconds flat!"
-
-BAD (generic -- could apply to any video):
-  "Her attitude went from zero to one hundred, but wait until you see the shocking reason she gets arrested!"
+BAD (too long, 18+ words -- FORBIDDEN):
+  X "She threw her drink at the officer during the traffic stop, but wait until you see the exact charge that ended her night!" (23 words - TOO LONG)
+  X "He screamed 'I know my rights, you can't search me!' right before the K9 sat down next to his door, but wait until you see what the dog found in 10 seconds flat!" (31 words - WAY TOO LONG)
+  X "Her attitude went from zero to one hundred, but wait until you see the shocking reason she gets arrested!" (Generic)
 
 =====================================

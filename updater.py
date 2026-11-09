@@ -34,7 +34,12 @@ PROTECTED_ITEMS = {
     "raw_cuts",
     "test_out",
     "dist",
-    "build"
+    "build",
+    ".agents",
+    "AGENTS.md",
+    "GEMINI.md",
+    "open-code-review",
+    "scratch"
 }
 
 def parse_version(v_str: str):
@@ -60,10 +65,10 @@ def get_local_version() -> str:
             try:
                 with open(v_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data.get("version", "2.10.0")
+                    return data.get("version", "2.12.0")
             except Exception:
                 pass
-    return "2.10.0"
+    return "2.12.0"
 
 def get_repo_urls():
     """Lấy link version.json và link tải zip từ updater_config.json hoặc UPDATE_SERVER_URL."""

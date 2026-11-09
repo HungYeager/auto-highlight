@@ -57,9 +57,18 @@ web/node_modules/
 web/.vite/
 web/dist/stats.html
 
-# ── OS & IDE files ──
+# ── OS, IDE & Local AI Agent Customizations (Never push to GitHub) ──
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.log
+.agents/
+.agent/
+.claude/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+open-code-review/
+scratch/
+.pytest_cache/

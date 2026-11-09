@@ -123,5 +123,74 @@ class TestWhisperAndWordsJson(unittest.TestCase):
         tmp_files = list(Path(tempfile.gettempdir()).glob("wordpop_*fallback_vid*.ass"))
         self.assertTrue(len(tmp_files) > 0, "Fallback ASS file was not generated")
 
+    def test_subtitles_never_overlap_in_ass(self):
+        """Verify ASS dialogues in Highlight Line and Word Pop never have overlapping timestamps."""
+        def _parse_ass_ts(ts_str: str) -> float:
+            h, m, s = ts_str.split(":")
+            return int(h) * 3600 + int(m) * 60 + float(s)
+
+        # Set up an SRT with adjacent cues and words with overlapping raw timestamps
+        overlapping_srt = self.tmp_dir / "overlap.srt"
+        overlapping_srt.write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\nStay right here\n\n"
+            "2\n00:00:01,800 --> 00:00:04,000\nWhat is your name\n\n",
+            encoding="utf-8"
+        )
+        overlapping_words = self.tmp_dir / "overlap.words.json"
+        overlapping_words.write_text(json.dumps([
+            {"word": "Stay", "start": 0.0, "end": 0.6},
+            {"word": "right", "start": 0.5, "end": 1.2},     # overlaps with Stay
+            {"word": "here", "start": 1.1, "end": 1.9},      # overlaps with right
+            {"word": "What", "start": 1.8, "end": 2.4},      # near boundary
+            {"word": "is", "start": 2.3, "end": 2.8},
+            {"word": "your", "start": 2.7, "end": 3.2},
+            {"word": "name", "start": 3.1, "end": 3.8},
+        ]), encoding="utf-8")
+
+        test_vid = self.tmp_dir / "overlap_vid.mp4"
+        test_vid.write_bytes(b"\x00" * 1024)
+
+        for style, prefix in [("Highlight Line", "karaoke"), ("Word Pop", "wordpop")]:
+            st = {
+                "sub_style": style,
+                "subtitles": True,
+                "sub_offset_ms": 0,
+                "sub_font_size": 40,
+            }
+            logger = DummyLogger()
+            _burn_subtitles_pass(
+                src=test_vid,
+                srt_path=overlapping_srt,
+                st=st,
+                log=logger,
+                words_json_path=overlapping_words
+            )
+
+            tmp_files = list(Path(tempfile.gettempdir()).glob(f"{prefix}_*overlap_vid*.ass"))
+            self.assertTrue(len(tmp_files) > 0, f"ASS file for {style} was not generated")
+            latest_ass = sorted(tmp_files, key=lambda f: f.stat().st_mtime)[-1]
+            content = latest_ass.read_text(encoding="utf-8-sig")
+
+            dialogue_lines = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            intervals = []
+            for dl in dialogue_lines:
+                # Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+                fields = dl.split(",", 9)
+                start_s = _parse_ass_ts(fields[1])
+                end_s = _parse_ass_ts(fields[2])
+                self.assertLessEqual(start_s, end_s, f"Negative duration in {style}: {dl}")
+                intervals.append((start_s, end_s, fields[9]))
+
+            # Crucial check: No two intervals overlap in time!
+            for i in range(len(intervals) - 1):
+                cur_end = intervals[i][1]
+                next_start = intervals[i + 1][0]
+                self.assertLessEqual(
+                    cur_end, next_start + 1e-4,
+                    f"Dialogue overlap detected in {style}! Line {i} ends at {cur_end}s but Line {i+1} starts at {next_start}s\n"
+                    f"Line {i}: {intervals[i]}\nLine {i+1}: {intervals[i+1]}"
+                )
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -234,7 +234,7 @@ hidden = [
 
     # ── Auto-Updater module ──────────────────────────────────
     "updater",
-    "youtube_manager",
+    "youtube_manager", "native_dialogs", "birefnet_engine",
 
     # ── Standard Library holes PyInstaller can miss ───────────
     "ctypes",

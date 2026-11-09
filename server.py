@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple, Union
 
 # In windowless GUI mode (PyInstaller console=False on packaged client machines),
 # sys.stdout and sys.stderr are None. We wrap them safely to prevent any print() or
@@ -185,7 +185,7 @@ async def lifespan(app: FastAPI):
         loop.set_exception_handler(_handler)
     yield
 
-app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.10.0", lifespan=lifespan)
+app = FastAPI(title="Viral Bodycam Clipper Engine", version="2.12.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -294,14 +294,29 @@ class AppState:
         # Persistent KeyRotator shared across all Gemini calls (title regen, transcription, etc.)
         self._key_rotator: Optional[Any] = None
         self._rotator_keys: List[str] = []
-        self.frame_cache: Dict[str, Image.Image] = {}
-        self.bg_cache: Dict[tuple, Image.Image] = {}
+        self.frame_cache: "_ODict[str, Image.Image]" = _ODict()
+        self.bg_cache: "_ODict[tuple, Image.Image]" = _ODict()
+        self._frame_cache_max: int = 64
         self.logs: List[Dict[str, str]] = []
         self.ws_clients: List[WebSocket] = []
         # Batches & Session: multi-batch workspace
         self.batches: Dict[str, Dict[str, Any]] = {}
         self.active_batch_id: str = "default"
         self.load_session()
+
+    def get_cached_frame(self, key: str) -> Optional[Image.Image]:
+        with STATE_LOCK:
+            img = self.frame_cache.get(key)
+            if img is not None:
+                self.frame_cache.move_to_end(key)
+            return img
+
+    def put_cached_frame(self, key: str, img: Image.Image) -> None:
+        with STATE_LOCK:
+            self.frame_cache[key] = img
+            self.frame_cache.move_to_end(key)
+            while len(self.frame_cache) > self._frame_cache_max:
+                self.frame_cache.popitem(last=False)
 
     @property
     def edit_queue(self) -> List[Dict[str, Any]]:
@@ -408,8 +423,15 @@ class AppState:
             return True
 
     def save_session(self):
+        # Prevent unit tests from polluting production session_data.json
+        if ("unittest" in sys.modules or "pytest" in sys.modules) and not os.environ.get("OPENCUT_ALLOW_TEST_SESSION_SAVE"):
+            return
         try:
             with STATE_LOCK:
+                for b_val in self.batches.values():
+                    if isinstance(b_val, dict):
+                        b_val.pop("edit_queue", None)
+                        b_val.pop("count", None)
                 data = {
                     "version": 1,
                     "active_batch_id": self.active_batch_id,
@@ -417,9 +439,11 @@ class AppState:
                     "video_results": self.video_results,
                     "yt_metadata": getattr(self, "yt_metadata", {}),
                 }
+                # Serialize inside STATE_LOCK to prevent RuntimeError: dictionary changed size during iteration
+                payload = json.dumps(data, indent=2, ensure_ascii=False)
             tmp_file = Path(SESSION_FILE).with_suffix(".tmp")
             with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write(payload)
             tmp_file.replace(SESSION_FILE)
         except Exception as e:
             print(f"[AppState] Error saving session: {e}", flush=True)
@@ -439,11 +463,28 @@ class AppState:
             return
 
         try:
+            needs_resave = False
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self.video_results = data.get("video_results", {})
+                raw_results = data.get("video_results", {})
+                # Filter out leftover temporary test files from video_results
+                clean_results = {}
+                for k, v in raw_results.items():
+                    if "opencut_test_res_" in k or ("\\Temp\\tmp" in k and not Path(k).exists()):
+                        needs_resave = True
+                        continue
+                    clean_results[k] = v
+                self.video_results = clean_results
                 self.yt_metadata = data.get("yt_metadata", {})
                 self.batches = data.get("batches", {})
+                # Strip legacy duplicate 'edit_queue' and 'count' zombie keys from batches
+                for b_val in self.batches.values():
+                    if isinstance(b_val, dict):
+                        if "edit_queue" in b_val or "count" in b_val:
+                            b_val.pop("edit_queue", None)
+                            b_val.pop("count", None)
+                            needs_resave = True
+                        b_val.setdefault("items", [])
                 self.active_batch_id = data.get("active_batch_id", "default")
                 if not self.batches:
                     self.batches = {
@@ -457,6 +498,8 @@ class AppState:
                     self.active_batch_id = "default"
                 elif self.active_batch_id not in self.batches:
                     self.active_batch_id = next(iter(self.batches.keys()))
+            if needs_resave:
+                self.save_session()
             print(f"[AppState] Loaded session: {len(self.video_results)} videos, {len(self.batches)} batches", flush=True)
         except Exception as e:
             print(f"[AppState] Error loading session: {e}", flush=True)
@@ -493,6 +536,7 @@ class AppState:
             "source_mask_mode": "top",
             "direct_import_gen_title": True,
             "auto_clean_temp": True,
+            "min_viral_score": 6.0,
         }
 
     def save_config(self):
@@ -624,6 +668,7 @@ class ConfigModel(BaseModel):
     auto_clean_temp: Optional[bool] = True
     analysis_parallel: Optional[int] = None   # concurrent analysis streams (1-10)
     youtube_code_prefix: Optional[str] = "COP"
+    min_viral_score: Optional[float] = 6.0
     video_files: Optional[List[str]] = None
 
 class VideoAddRequest(BaseModel):
@@ -1278,378 +1323,14 @@ async def upload_files(files: List[UploadFile] = File(...)):
     return {"status": "ok", "added": added, "total": len(app_state.video_files)}
 
 
-def _ctypes_pick_folder(title: str) -> str:
-    """Windows-native folder picker via Shell32 ctypes."""
-    if sys.platform != "win32":
-        return ""
-    try:
-        import ctypes
-        import ctypes.wintypes as wt
-
-        class BROWSEINFO(ctypes.Structure):
-            _fields_ = [
-                ("hwndOwner",      wt.HWND),
-                ("pidlRoot",       ctypes.c_void_p),
-                ("pszDisplayName", ctypes.c_wchar_p),
-                ("lpszTitle",      ctypes.c_wchar_p),
-                ("ulFlags",        wt.UINT),
-                ("lpfn",           ctypes.c_void_p),
-                ("lParam",         wt.LPARAM),
-                ("iImage",         ctypes.c_int),
-            ]
-
-        shell32 = ctypes.windll.shell32
-        ole32   = ctypes.windll.ole32
-        try:
-            ole32.CoInitialize(0)
-        except Exception:
-            pass
-
-        disp_buf = ctypes.create_unicode_buffer(32768)
-        bi = BROWSEINFO()
-        bi.pszDisplayName = ctypes.cast(disp_buf, ctypes.c_wchar_p)
-        bi.lpszTitle      = title
-        bi.ulFlags        = 0x0001   # BIF_RETURNONLYFSDIRS
-
-        shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
-        pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
-
-        result = ""
-        if pidl:
-            path_buf = ctypes.create_unicode_buffer(32768)
-            shell32.SHGetPathFromIDListW(ctypes.c_void_p(pidl), path_buf)
-            ole32.CoTaskMemFree(ctypes.c_void_p(pidl))
-            result = path_buf.value
-        try:
-            ole32.CoUninitialize()
-        except Exception:
-            pass
-        return result
-    except Exception as exc:
-        print(f"[dialog] ctypes folder picker: {exc}")
-        return ""
-
-
-def _ctypes_pick_files(title: str, filter_pairs: list, multi: bool = True) -> list[str]:
-    """Windows-native file picker via comdlg32 ctypes."""
-    if sys.platform != "win32":
-        return []
-    try:
-        import ctypes
-        import ctypes.wintypes as wt
-
-        # Build null-delimited filter string: "Name\0*.ext\0Name2\0*.ext2\0\0"
-        filter_raw = "".join(f"{name}\0{pat}\0" for name, pat in filter_pairs) + "\0\0"
-        filter_buf = ctypes.create_unicode_buffer(len(filter_raw) + 4)
-        for i, c in enumerate(filter_raw):
-            filter_buf[i] = c
-
-        BUF      = 1 << 20   # 1 MB — enough for hundreds of long paths
-        file_buf = ctypes.create_unicode_buffer(BUF)
-
-        class OPENFILENAMEW(ctypes.Structure):
-            _fields_ = [
-                ("lStructSize",       wt.DWORD),
-                ("hwndOwner",         wt.HWND),
-                ("hInstance",         wt.HINSTANCE),
-                ("lpstrFilter",       ctypes.c_void_p),
-                ("lpstrCustomFilter", ctypes.c_void_p),
-                ("nMaxCustFilter",    wt.DWORD),
-                ("nFilterIndex",      wt.DWORD),
-                ("lpstrFile",         ctypes.c_void_p),
-                ("nMaxFile",          wt.DWORD),
-                ("lpstrFileTitle",    ctypes.c_void_p),
-                ("nMaxFileTitle",     wt.DWORD),
-                ("lpstrInitialDir",   ctypes.c_wchar_p),
-                ("lpstrTitle",        ctypes.c_wchar_p),
-                ("Flags",             wt.DWORD),
-                ("nFileOffset",       wt.WORD),
-                ("nFileExtension",    wt.WORD),
-                ("lpstrDefExt",       ctypes.c_wchar_p),
-                ("lCustData",         wt.LPARAM),
-                ("lpfnHook",          ctypes.c_void_p),
-                ("lpTemplateName",    ctypes.c_wchar_p),
-                ("pvReserved",        ctypes.c_void_p),
-                ("dwReserved",        wt.DWORD),
-                ("FlagsEx",           wt.DWORD),
-            ]
-
-        OFN_ALLOWMULTISELECT = 0x00000200
-        OFN_EXPLORER         = 0x00080000
-        OFN_FILEMUSTEXIST    = 0x00001000
-        OFN_HIDEREADONLY     = 0x00000004
-
-        ofn = OPENFILENAMEW()
-        ofn.lStructSize  = ctypes.sizeof(OPENFILENAMEW)
-        ofn.lpstrFilter  = ctypes.cast(filter_buf, ctypes.c_void_p)
-        ofn.nFilterIndex = 1
-        ofn.lpstrFile    = ctypes.cast(file_buf, ctypes.c_void_p)
-        ofn.nMaxFile     = BUF
-        ofn.lpstrTitle   = title
-        ofn.Flags        = OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_EXPLORER
-        if multi:
-            ofn.Flags |= OFN_ALLOWMULTISELECT
-
-        comdlg32 = ctypes.windll.comdlg32
-        if not comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
-            return []
-
-        # Parse double-null-delimited wchar buffer cleanly without accessing .raw
-        raw_str = ""
-        for i in range(BUF):
-            ch = file_buf[i]
-            if ch == '\x00':
-                if i + 1 < BUF and file_buf[i + 1] == '\x00':
-                    break
-                raw_str += '\x00'
-            else:
-                raw_str += ch
-
-        parts = [p for p in raw_str.split('\x00') if p]
-        if not parts:
-            return []
-        if not multi or len(parts) == 1:
-            return parts
-        directory = Path(parts[0])
-        return [str(directory / name) for name in parts[1:]]
-    except Exception as exc:
-        print(f"[dialog] ctypes file picker error: {exc}")
-        return []
-
-
-import unicodedata
-
-def _safe_resolve_path(p_str: str) -> Optional[Path]:
-    """Resolve file path handling Unicode normalization (NFC/NFD) and Windows path separators."""
-    if not p_str or not isinstance(p_str, str):
-        return None
-    raw = p_str.strip().strip('"').strip("'")
-    if not raw:
-        return None
-    p = Path(raw)
-    if p.exists():
-        return p
-    # Try Unicode NFC normalization
-    try:
-        p_nfc = Path(unicodedata.normalize("NFC", raw))
-        if p_nfc.exists():
-            return p_nfc
-    except Exception:
-        pass
-    # Try Unicode NFD normalization
-    try:
-        p_nfd = Path(unicodedata.normalize("NFD", raw))
-        if p_nfd.exists():
-            return p_nfd
-    except Exception:
-        pass
-    # Try standard normalized path
-    try:
-        p_norm = Path(os.path.normpath(raw))
-        if p_norm.exists():
-            return p_norm
-    except Exception:
-        pass
-    # Cross-machine fallback: check if file with same name exists in output/raw_cuts/cwd
-    try:
-        filename = p.name
-        if filename:
-            candidate_dirs = []
-            try:
-                if 'app_state' in globals():
-                    out_folder = app_state.get_current_output_folder()
-                    if out_folder:
-                        p_out = Path(out_folder)
-                        candidate_dirs.extend([p_out, p_out / "raw_cuts"])
-                    cfg_out = app_state.config.get("output_folder")
-                    if cfg_out:
-                        p_cfg = Path(cfg_out)
-                        candidate_dirs.extend([p_cfg, p_cfg / "raw_cuts"])
-                    for b in app_state.batches.values():
-                        b_out = b.get("output_folder")
-                        if b_out:
-                            p_b = Path(b_out)
-                            candidate_dirs.extend([p_b, p_b / "raw_cuts"])
-            except Exception:
-                pass
-            candidate_dirs.extend([
-                Path.cwd(),
-                Path.cwd() / "output_clips",
-                Path.cwd() / "output_clips" / "raw_cuts",
-                Path.cwd() / "raw_cuts",
-            ])
-            for c_dir in candidate_dirs:
-                try:
-                    c_file = c_dir / filename
-                    if c_file.is_file():
-                        return c_file
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return p if p.exists() else None
-
-
-def _py_pick_files(title: str, filetypes: list, multi: bool = True) -> list[str]:
-    """Robust Windows-native file picker with explicit UTF-8 encoding.
-    
-    Order of execution:
-    1. Direct in-process Tkinter in worker thread (bundled inside PyInstaller EXE)
-    2. Native Windows PowerShell OpenFileDialog (100% reliable on every Windows PC without Python)
-    3. Direct Win32 comdlg32 GetOpenFileNameW via ctypes
-    """
-    # 1. Try in-process Tkinter (bundled inside .exe)
-    try:
-        res_list = []
-        err = []
-        def _tk_work():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                root.focus_force()
-                if multi:
-                    r = filedialog.askopenfilenames(title=title, filetypes=filetypes)
-                else:
-                    r = filedialog.askopenfilename(title=title, filetypes=filetypes)
-                root.destroy()
-                if r:
-                    if isinstance(r, (list, tuple)):
-                        res_list.extend(r)
-                    else:
-                        res_list.append(r)
-            except Exception as e:
-                err.append(e)
-
-        th = threading.Thread(target=_tk_work, daemon=True)
-        th.start()
-        th.join(timeout=120)
-        if not err and (res_list or not th.is_alive()):
-            return [str(p) for p in res_list if p]
-    except Exception:
-        pass
-
-    # 2. Fallback: Native PowerShell OpenFileDialog (pre-installed on 100% of Windows 7/8/10/11)
-    try:
-        filter_parts = []
-        if filetypes:
-            for name, pat in filetypes:
-                clean_pat = pat.replace(";", ";")
-                filter_parts.append(f"{name} ({clean_pat})|{clean_pat}")
-        else:
-            filter_parts.append("All Files (*.*)|*.*")
-        filter_str = "|".join(filter_parts).replace("'", "''")
-        multis = "$true" if multi else "$false"
-
-        ps_code = (
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
-            "[Console]::InputEncoding  = [System.Text.Encoding]::UTF8\n"
-            "$OutputEncoding          = [System.Text.Encoding]::UTF8\n"
-            "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null\n"
-            "$f = New-Object System.Windows.Forms.OpenFileDialog\n"
-            f"$f.Title = '{title}'\n"
-            f"$f.Filter = '{filter_str}'\n"
-            f"$f.Multiselect = {multis}\n"
-            "$f.RestoreDirectory = $true\n"
-            "$f.AutoUpgradeEnabled = $true\n"
-            "$res = $f.ShowDialog()\n"
-            "if ($res -eq [System.Windows.Forms.DialogResult]::OK) {\n"
-            "    $f.FileNames | ForEach-Object { [Console]::WriteLine($_) }\n"
-            "}\n"
-        )
-        enc = base64.b64encode(ps_code.encode("utf-16le")).decode("ascii")
-        res = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", enc],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
-        if res.stdout:
-            out_lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-            if out_lines:
-                return out_lines
-    except Exception as e:
-        print(f"[dialog] PowerShell file picker error: {e}")
-
-    # 3. Final Fallback: Direct ctypes comdlg32 GetOpenFileNameW
-    try:
-        pairs = [(name, pat.replace(";", ";")) for name, pat in filetypes]
-        return _ctypes_pick_files(title, pairs, multi=multi)
-    except Exception as e:
-        print(f"[dialog] ctypes file picker error: {e}")
-        return []
-
-
-def _py_pick_folder(title: str) -> str:
-    """Robust Windows-native folder picker with explicit UTF-8 encoding.
-    
-    Order of execution:
-    1. Direct in-process Tkinter in worker thread (bundled inside PyInstaller EXE)
-    2. Native Windows PowerShell FolderBrowserDialog (100% reliable on every Windows PC)
-    3. Direct Win32 Shell32 via ctypes
-    """
-    # 1. Try in-process Tkinter (bundled inside .exe)
-    try:
-        res_val = []
-        err = []
-        def _tk_work():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                root.focus_force()
-                r = filedialog.askdirectory(title=title)
-                root.destroy()
-                if r:
-                    res_val.append(r)
-            except Exception as e:
-                err.append(e)
-
-        th = threading.Thread(target=_tk_work, daemon=True)
-        th.start()
-        th.join(timeout=120)
-        if not err and (res_val or not th.is_alive()):
-            return str(res_val[0]) if res_val else ""
-    except Exception:
-        pass
-
-    # 2. Fallback: Native PowerShell FolderBrowserDialog
-    try:
-        ps_code = (
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
-            "[Console]::InputEncoding  = [System.Text.Encoding]::UTF8\n"
-            "$OutputEncoding          = [System.Text.Encoding]::UTF8\n"
-            "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null\n"
-            "$f = New-Object System.Windows.Forms.FolderBrowserDialog\n"
-            f"$f.Description = '{title}'\n"
-            "$f.ShowNewFolderButton = $true\n"
-            "$res = $f.ShowDialog()\n"
-            "if ($res -eq [System.Windows.Forms.DialogResult]::OK) {\n"
-            "    [Console]::WriteLine($f.SelectedPath)\n"
-            "}\n"
-        )
-        enc = base64.b64encode(ps_code.encode("utf-16le")).decode("ascii")
-        res = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", enc],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
-        if res.stdout:
-            out = res.stdout.strip()
-            if out:
-                return out
-    except Exception as e:
-        print(f"[dialog] PowerShell folder picker error: {e}")
-
-    # 3. Final Fallback: Direct ctypes Shell32 SHBrowseForFolderW
-    try:
-        return _ctypes_pick_folder(title)
-    except Exception as e:
-        print(f"[dialog] ctypes folder picker error: {e}")
-        return ""
+from native_dialogs import (
+    _ctypes_pick_folder,
+    _ctypes_pick_files,
+    _safe_resolve_path,
+    _py_pick_files,
+    _py_pick_folder,
+    _reveal_folder_in_explorer as _native_reveal_folder,
+)
 
 
 
@@ -1913,7 +1594,7 @@ def _run_direct_edit_import(video_paths: List[str]):
             title = ""
             suggested = []
 
-        # Cut 16s clip exact into raw_cuts
+        # Cut / stream-copy into raw_cuts
         stem        = sanitize(p.stem)
         start_clean = start_ts.replace(":", "-")
         dst_clip    = raw_dir / f"{stem}_highlight_{start_clean}.mp4"
@@ -1923,13 +1604,52 @@ def _run_direct_edit_import(video_paths: List[str]):
         _cut_dur = int(vid_dur) if vid_dur > 1 else CLIP_DURATION
 
         try:
-            cut_clip_exact(p, start_ts, dst_clip, _make_logger(_log), duration=_cut_dur)
+            # 1. If source and destination are the exact same file, no-op
+            if p.resolve() == dst_clip.resolve() and dst_clip.exists():
+                pass
+            # 2. Fast path: full video direct import from 00:00:00 -> stream copy (-c copy)
+            elif start_ts == "00:00:00" and (_cut_dur >= vid_dur - 1.0 or vid_dur <= 0):
+                copied = False
+                cmd_copy = [
+                    FFMPEG, "-y",
+                    "-i", str(p),
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
+                    str(dst_clip),
+                ]
+                try:
+                    r_fast = subprocess.run(
+                        cmd_copy, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=max(60, int(vid_dur * 0.5)),
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    if r_fast.returncode == 0 and dst_clip.exists() and dst_clip.stat().st_size >= 512:
+                        copied = True
+                        app_state.log(f"⚡ Fast stream copy: {dst_clip.name} ({dst_clip.stat().st_size / (1024*1024):.2f} MB)", "ok")
+                except Exception as c_err:
+                    _log("warn", f"Stream copy failed ({c_err}), falling back to cut_clip_exact")
+
+                if not copied:
+                    cut_clip_exact(p, start_ts, dst_clip, _make_logger(_log), duration=_cut_dur)
+            else:
+                cut_clip_exact(p, start_ts, dst_clip, _make_logger(_log), duration=_cut_dur)
+
+            # Cleanup temp upload file if applicable and point source_path to permanent raw_cuts location
+            is_temp_upload = "temp_uploads" in str(p) or (p.parent.name == "temp_uploads")
+            if is_temp_upload and dst_clip.exists() and dst_clip.resolve() != p.resolve():
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                final_source = str(dst_clip)
+            else:
+                final_source = str(p)
 
             entry = {
                 "clip_path":        str(dst_clip),
                 "path":             str(dst_clip),
                 "name":             dst_clip.name,
-                "source_path":      str(p),
+                "source_path":      final_source,
                 "title":            title,
                 "suggested_titles": suggested,
                 "description":      "",
@@ -1950,7 +1670,8 @@ def _run_direct_edit_import(video_paths: List[str]):
             app_state.log(f"Cut failed for direct import {p.name}: {ce}", "error")
 
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    workers = min(2, max(1, os.cpu_count() or 2))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         executor.map(_process_one, video_paths)
 
 
@@ -2030,49 +1751,8 @@ def pick_bg_video_dialog():
     return {"status": "cancelled", "path": ""}
 
 
-_last_opened_folders: Dict[str, float] = {}
-
-
 def _reveal_folder_in_explorer(folder_path: str) -> str:
-    """Reliably open a folder in Windows Explorer without opening duplicate windows.
-    
-    1. Debounces rapid calls within 1.0s to prevent multiple windows on double-click.
-    2. Opens the folder via os.startfile() (native Windows ShellExecute, opens exactly 1 window).
-    3. Falls back to explorer.exe only if os.startfile fails.
-    """
-    target = os.path.normpath(os.path.abspath(folder_path))
-    try:
-        os.makedirs(target, exist_ok=True)
-    except Exception as e:
-        app_state.log(f"⚠️ Could not create directory: {e}", "warn")
-
-    # Debounce rapid consecutive clicks on the same folder within 1.0s
-    now = time.time()
-    last_time = _last_opened_folders.get(target, 0.0)
-    if now - last_time < 1.0:
-        return target
-    _last_opened_folders[target] = now
-
-    # Housekeeping: prune old entries
-    if len(_last_opened_folders) > 20:
-        for k in list(_last_opened_folders.keys()):
-            if now - _last_opened_folders[k] > 60:
-                _last_opened_folders.pop(k, None)
-
-    opened = False
-    try:
-        os.startfile(target)
-        opened = True
-    except Exception:
-        pass
-
-    if not opened:
-        try:
-            subprocess.Popen(["explorer.exe", target])
-        except Exception as e:
-            app_state.log(f"⚠️ Failed to open explorer for {target}: {e}", "warn")
-
-    return target
+    return _native_reveal_folder(folder_path, log_fn=app_state.log)
 
 
 @app.post("/api/system/open_output")
@@ -2324,9 +2004,6 @@ def cut_candidate_clip(req: Dict[str, Any]):
         batch_id = app_state.active_batch_id
         if batch_id and batch_id in app_state.batches:
             entry["batch_id"] = batch_id
-            b_queue = app_state.batches[batch_id].setdefault("edit_queue", [])
-            b_queue.append(entry)
-            app_state.batches[batch_id]["count"] = len(b_queue)
 
         already = any(e["path"] == str(dst) for e in app_state.edit_queue)
         if not already:
@@ -2709,13 +2386,21 @@ def redownload_all_failed_clips():
 
     fixed = 0
     errors = []
-    for item in failed_items:
-        cp = item.get("clip_path") or item.get("path")
+    lock_rd = threading.Lock()
+
+    def _redownload_worker(item_dict: dict):
+        nonlocal fixed
+        cp = item_dict.get("clip_path") or item_dict.get("path")
         try:
             redownload_edit_queue_clip(RedownloadClipRequest(clip_path=cp))
-            fixed += 1
+            with lock_rd:
+                fixed += 1
         except Exception as exc:
-            errors.append(f"{Path(cp).name}: {exc}")
+            with lock_rd:
+                errors.append(f"{Path(cp).name}: {exc}")
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(_redownload_worker, failed_items))
 
     return {
         "status": "ok",
@@ -2738,15 +2423,15 @@ class SendAllVideosRequest(BaseModel):
     mode: str = "short"
 
 
-def _cut_and_queue_video_candidates(
+def _prepare_video_cut_tasks(
     video_path: Any,
     raw_dir: Path,
     _log: Any,
     trim_start_offset: float = 0.0,
     trim_duration: Optional[float] = None,
     mode: str = "short",
-) -> Tuple[List[Dict[str, Any]], str]:
-    """Helper to cut and queue all candidates for a specific video into Tab 2 edit queue using Title #1."""
+) -> Tuple[List[Any], str]:
+    """Prepare per-candidate cut/download callables for a video while registering asset_code deterministically."""
     is_yt = isinstance(video_path, str) and video_path.startswith(("http://", "https://"))
     v_path = None
     if not is_yt:
@@ -2766,6 +2451,7 @@ def _cut_and_queue_video_candidates(
         return [], ""
 
     asset_code = ""
+    clean_title = ""
     if is_yt:
         yt_title = getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("title") or "yt_clip"
         vid_dur = float(getattr(app_state, "yt_metadata", {}).get(video_path, {}).get("duration", 0.0) or 0.0)
@@ -2799,143 +2485,178 @@ def _cut_and_queue_video_candidates(
         stem = sanitize(v_path.stem)
         vid_dur = get_video_duration(v_path) or 0.0
 
-    added_entries = []
-
+    tasks = []
     for idx, chosen in enumerate(candidates):
-        start_ts = (
-            chosen.get("start_time")
-            or chosen.get("start_ts")
-            or "00:00:00"
-        )
-        cand_dur = float(chosen.get("clip_duration") or CLIP_DURATION)
-        if mode == "story" and cand_dur != CLIP_DURATION:
-            base_dur = cand_dur
-        elif trim_duration and trim_duration > 0:
-            base_dur = float(trim_duration)
-        else:
-            base_dur = cand_dur
+        def _make_task(_idx=idx, _chosen=chosen):
+            def _run_cut() -> Optional[Dict[str, Any]]:
+                start_ts = (
+                    _chosen.get("start_time")
+                    or _chosen.get("start_ts")
+                    or "00:00:00"
+                )
+                cand_dur = float(_chosen.get("clip_duration") or CLIP_DURATION)
+                if mode == "story" and cand_dur != CLIP_DURATION:
+                    base_dur = cand_dur
+                elif trim_duration and trim_duration > 0:
+                    base_dur = float(trim_duration)
+                else:
+                    base_dur = cand_dur
 
-        start_sec = ts_to_seconds(start_ts)
+                start_sec = ts_to_seconds(start_ts)
 
-        if vid_dur > 0 and start_sec > vid_dur:
-            parts = start_ts.strip().split(":")
-            if len(parts) == 3:
-                alt_sec = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
-                if alt_sec <= vid_dur:
-                    start_sec = alt_sec
-            elif len(parts) == 2:
-                alt_sec = int(parts[0]) * 60 + float(parts[1])
-                if alt_sec <= vid_dur:
-                    start_sec = alt_sec
+                if vid_dur > 0 and start_sec > vid_dur:
+                    parts = start_ts.strip().split(":")
+                    if len(parts) == 3:
+                        alt_sec = int(parts[0]) * 60 + int(parts[1]) + float(parts[2]) / 60.0
+                        if alt_sec <= vid_dur:
+                            start_sec = alt_sec
+                    elif len(parts) == 2:
+                        alt_sec = int(parts[0]) * 60 + float(parts[1])
+                        if alt_sec <= vid_dur:
+                            start_sec = alt_sec
 
-        if abs(trim_start_offset) > 0.01:
-            start_sec = max(0.0, start_sec + trim_start_offset)
+                if abs(trim_start_offset) > 0.01:
+                    start_sec = max(0.0, start_sec + trim_start_offset)
 
-        if vid_dur > 0:
-            start_sec = min(start_sec, max(0.0, vid_dur - 1.0))
-            dur = min(base_dur, max(1.0, vid_dur - start_sec))
-        else:
-            dur = base_dur
-
-        h = int(start_sec // 3600)
-        m = int((start_sec % 3600) // 60)
-        s = start_sec % 60
-        start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
-
-        clip_num = int(chosen.get('id', idx+1) or (idx+1))
-        full_clip_code = ""
-        if base_code:
-            dst = raw_dir / format_clip_filename(base_code, clip_num, clean_title)
-            full_clip_code = f"{base_code}{clip_num:02d}"
-        else:
-            dst = raw_dir / f"{stem}_clip{clip_num}_{start_ts.replace(':', '-')}.mp4"
-
-        # Cut / download clip if not already exists on disk with valid size
-        if not dst.exists() or dst.stat().st_size < 1000:
-            app_state.log(f"✂️  [Cắt cảnh] #{idx+1} ({start_ts}) → {dst.name}", "info")
-            if is_yt:
-                end_sec = start_sec + dur
                 if vid_dur > 0:
-                    end_sec = min(vid_dur, end_sec)
-                eh = int(end_sec // 3600)
-                em = int((end_sec % 3600) // 60)
-                es = end_sec % 60
-                end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}" if es % 1 else f"{eh:02d}:{em:02d}:{int(es):02d}"
-                cookie_browser = app_state.config.get("youtube_cookie_browser", None)
-                try:
-                    download_youtube_section(
-                        url=video_path,
-                        start_time=start_ts,
-                        end_time=end_ts,
-                        output_path=str(dst),
-                        cookies_browser=cookie_browser,
-                        log=_log,
-                        vid_duration=vid_dur,
+                    start_sec = min(start_sec, max(0.0, vid_dur - 1.0))
+                    dur = min(base_dur, max(1.0, vid_dur - start_sec))
+                else:
+                    dur = base_dur
+
+                h = int(start_sec // 3600)
+                m = int((start_sec % 3600) // 60)
+                s = start_sec % 60
+                start_ts = f"{h:02d}:{m:02d}:{s:06.3f}" if s % 1 else f"{h:02d}:{m:02d}:{int(s):02d}"
+
+                clip_num = int(_chosen.get('id', _idx + 1) or (_idx + 1))
+                full_clip_code = ""
+                if base_code:
+                    dst = raw_dir / format_clip_filename(base_code, clip_num, clean_title)
+                    full_clip_code = f"{base_code}{clip_num:02d}"
+                else:
+                    dst = raw_dir / f"{stem}_clip{clip_num}_{start_ts.replace(':', '-')}.mp4"
+
+                # Cut / download clip if not already exists on disk with valid size
+                if not dst.exists() or dst.stat().st_size < 1000:
+                    app_state.log(f"✂️  [Cắt cảnh - 3 luồng] #{_idx+1} ({start_ts}) → {dst.name}", "info")
+                    if is_yt:
+                        end_sec = start_sec + dur
+                        if vid_dur > 0:
+                            end_sec = min(vid_dur, end_sec)
+                        eh = int(end_sec // 3600)
+                        em = int((end_sec % 3600) // 60)
+                        es = end_sec % 60
+                        end_ts = f"{eh:02d}:{em:02d}:{es:06.3f}" if es % 1 else f"{eh:02d}:{em:02d}:{int(es):02d}"
+                        cookie_browser = app_state.config.get("youtube_cookie_browser", None)
+                        try:
+                            download_youtube_section(
+                                url=video_path,
+                                start_time=start_ts,
+                                end_time=end_ts,
+                                output_path=str(dst),
+                                cookies_browser=cookie_browser,
+                                log=_log,
+                                vid_duration=vid_dur,
+                            )
+                        except Exception as exc:
+                            app_state.log(f"❌ Tải đoạn #{_idx+1} ({dst.name}) thất bại: {exc}", "error")
+                            return None
+                    else:
+                        try:
+                            cut_clip_exact(v_path, start_ts, dst, _make_logger(_log), duration=dur)
+                        except Exception as exc:
+                            app_state.log(f"❌ Cắt cảnh #{_idx+1} ({dst.name}) thất bại: {exc}", "error")
+                            return None
+
+                if is_yt and (not dst.exists() or dst.stat().st_size < 10 * 1024):
+                    app_state.log(
+                        f"⚠️ Clip YouTube #{_idx+1} ({dst.name}) không hợp lệ hoặc rỗng ({dst.stat().st_size if dst.exists() else 0} bytes), bỏ qua.",
+                        "warning",
                     )
-                except Exception as exc:
-                    app_state.log(f"❌ Tải đoạn #{idx+1} thất bại: {exc}", "error")
-                    continue
-            else:
-                try:
-                    cut_clip_exact(v_path, start_ts, dst, _make_logger(_log), duration=dur)
-                except Exception as exc:
-                    app_state.log(f"❌ Cắt cảnh #{idx+1} thất bại: {exc}", "error")
-                    continue
+                    if dst.exists():
+                        try:
+                            dst.unlink()
+                        except Exception:
+                            pass
+                    return None
 
-        # Đảm bảo clip YouTube tải về hợp lệ và không phải file rỗng (261 bytes) trước khi đưa vào hàng đợi
-        if is_yt and (not dst.exists() or dst.stat().st_size < 10 * 1024):
-            app_state.log(f"⚠️ Clip YouTube #{idx+1} ({dst.name}) không hợp lệ hoặc rỗng ({dst.stat().st_size if dst.exists() else 0} bytes), bỏ qua.", "warning")
-            if dst.exists():
-                try:
-                    dst.unlink()
-                except Exception:
-                    pass
-            continue
+                if is_yt and asset_code:
+                    yt_history_manager.increment_clips(
+                        asset_code,
+                        clip_name=dst.name,
+                        output_folder=str(raw_dir.parent if raw_dir else Path("output_clips")),
+                    )
 
-        if is_yt and asset_code:
-            yt_history_manager.increment_clips(
-                asset_code,
-                clip_name=dst.name,
-                output_folder=str(raw_dir.parent if raw_dir else Path("output_clips"))
-            )
+                suggested = _chosen.get("suggested_titles", [])
+                title1 = (suggested[0] if (suggested and len(suggested) > 0) else _chosen.get("title", "")).strip()
 
-        suggested = chosen.get("suggested_titles", [])
-        title1 = (suggested[0] if (suggested and len(suggested) > 0) else chosen.get("title", "")).strip()
-
-        entry = {
-            "clip_path": str(dst),
-            "path":      str(dst),
-            "name":      dst.name,
-            "title":     title1,
-            "source":    video_path if is_yt else v_path.name,
-            "asset_code": full_clip_code or asset_code,
-            "start_time": start_ts,
-            "start_sec":  start_sec,
-            "duration":   dur,
-            "suggested_titles": suggested,
-            "state":     _default_edit_state(),
-        }
-
-        with STATE_LOCK:
-            batch_id = app_state.active_batch_id
-            if batch_id and batch_id in app_state.batches:
-                entry["batch_id"] = batch_id
-                b_queue = app_state.batches[batch_id].setdefault("edit_queue", [])
-                if not any((x.get("clip_path") or x.get("path")) == str(dst) for x in b_queue):
-                    b_queue.append(entry)
-                app_state.batches[batch_id]["count"] = len(b_queue)
-
-            app_state.edit_queue = [e for e in app_state.edit_queue if (e.get("clip_path") or e.get("path")) != str(dst)]
-            app_state.edit_queue.append(entry)
-            added_entries.append(entry)
+                return {
+                    "clip_path": str(dst),
+                    "path":      str(dst),
+                    "name":      dst.name,
+                    "title":     title1,
+                    "source":    video_path if is_yt else v_path.name,
+                    "asset_code": full_clip_code or asset_code,
+                    "start_time": start_ts,
+                    "start_sec":  start_sec,
+                    "duration":   dur,
+                    "suggested_titles": suggested,
+                    "viral_score": _chosen.get("viral_score", 7.0),
+                    "score_reason": _chosen.get("score_reason", ""),
+                    "state":     _default_edit_state(),
+                }
+            return _run_cut
+        tasks.append(_make_task())
 
     v_label = stem if is_yt else v_path.name
+    return tasks, v_label
+
+
+def _cut_and_queue_video_candidates(
+    video_path: Any,
+    raw_dir: Path,
+    _log: Any,
+    trim_start_offset: float = 0.0,
+    trim_duration: Optional[float] = None,
+    mode: str = "short",
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Helper to cut and queue all candidates for a specific video into Tab 2 edit queue using 3 parallel threads."""
+    tasks, v_label = _prepare_video_cut_tasks(
+        video_path,
+        raw_dir,
+        _log,
+        trim_start_offset=trim_start_offset,
+        trim_duration=trim_duration,
+        mode=mode,
+    )
+    if not tasks:
+        return [], v_label
+
+    if len(tasks) > 1:
+        app_state.log(f"🚀 Đang tải/cắt song song {len(tasks)} phân cảnh của '{v_label}' (3 luồng cùng lúc)...", "info")
+        with ThreadPoolExecutor(max_workers=min(3, len(tasks))) as pool:
+            results = list(pool.map(lambda fn: fn(), tasks))
+    else:
+        results = [tasks[0]()]
+
+    added_entries = [entry for entry in results if entry is not None]
+    if added_entries:
+        with STATE_LOCK:
+            batch_id = app_state.active_batch_id
+            for entry in added_entries:
+                if batch_id and batch_id in app_state.batches:
+                    entry["batch_id"] = batch_id
+                dst_str = entry["clip_path"]
+                app_state.edit_queue = [e for e in app_state.edit_queue if (e.get("clip_path") or e.get("path")) != dst_str]
+                app_state.edit_queue.append(entry)
+
     return added_entries, v_label
 
 
 @app.post("/api/candidates/send_all_to_edit")
 def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
-    """Batch cut and transfer ALL candidates for a video into Tab 2 edit queue using Title #1."""
+    """Batch cut and transfer ALL candidates for a video into Tab 2 edit queue using Title #1 (3 parallel threads)."""
     out_dir = Path(app_state.get_current_output_folder())
     raw_dir = out_dir / "raw_cuts"
     try:
@@ -2978,7 +2699,7 @@ def send_all_candidates_to_edit(req: SendAllCandidatesRequest):
 
 @app.post("/api/candidates/send_all_videos_to_edit")
 def send_all_videos_candidates_to_edit(req: Optional[SendAllVideosRequest] = None):
-    """Batch cut and transfer ALL candidates across ALL videos in list into Tab 2 edit queue using Title #1."""
+    """Batch cut and transfer ALL candidates across ALL videos in list into Tab 2 edit queue using 3 parallel threads."""
     out_dir = Path(app_state.get_current_output_folder())
     raw_dir = out_dir / "raw_cuts"
     try:
@@ -2996,22 +2717,21 @@ def send_all_videos_candidates_to_edit(req: Optional[SendAllVideosRequest] = Non
         elif "msg" in kwargs:
             app_state.log(str(kwargs["msg"]), kwargs.get("level", "info"))
 
-    all_added: List[Dict[str, Any]] = []
-    processed_videos = 0
     videos_list = list(app_state.video_files)
     total_videos = len(videos_list)
 
     if total_videos == 0:
         raise HTTPException(status_code=400, detail="Danh sách video hiện đang trống.")
 
-    app_state.log(f"⚡ Bắt đầu cắt tất cả cảnh của {total_videos} video trong danh sách sang Tab 2...", "info")
-
     offset = req.trim_start_offset if req else 0.0
     dur = req.trim_duration if req else None
     mode = req.mode if req else "short"
 
-    for v in videos_list:
-        added, v_label = _cut_and_queue_video_candidates(
+    # 1. Prepare all tasks across all videos in deterministic video order (registers asset codes sequentially)
+    all_video_tasks: List[Tuple[int, Any]] = []
+    videos_with_tasks = set()
+    for v_idx, v in enumerate(videos_list):
+        tasks, _v_label = _prepare_video_cut_tasks(
             v,
             raw_dir,
             _log,
@@ -3019,18 +2739,59 @@ def send_all_videos_candidates_to_edit(req: Optional[SendAllVideosRequest] = Non
             trim_duration=dur,
             mode=mode,
         )
-        if added:
-            all_added.extend(added)
-            processed_videos += 1
+        if tasks:
+            videos_with_tasks.add(v_idx)
+            for t_fn in tasks:
+                all_video_tasks.append((v_idx, t_fn))
 
-    if not all_added:
+    if not all_video_tasks:
         raise HTTPException(status_code=400, detail="Chưa có video nào có cảnh (candidates) được phân tích xong.")
 
+    app_state.log(
+        f"🚀 Bắt đầu tải/cắt song song {len(all_video_tasks)} phân cảnh từ {len(videos_with_tasks)}/{total_videos} video (3 luồng cùng lúc)...",
+        "info",
+    )
+
+    # 2. Run all candidate downloads/cuts across 3 concurrent worker threads
+    def _exec_indexed(item_tuple: Tuple[int, Any]) -> Tuple[int, Optional[Dict[str, Any]]]:
+        v_i, fn = item_tuple
+        entry = fn()
+        if entry is not None:
+            # Push live update so Tab 2 UI sees clips arriving in real time
+            with STATE_LOCK:
+                batch_id = app_state.active_batch_id
+                if batch_id and batch_id in app_state.batches:
+                    entry["batch_id"] = batch_id
+                dst_str = entry["clip_path"]
+                app_state.edit_queue = [e for e in app_state.edit_queue if (e.get("clip_path") or e.get("path")) != dst_str]
+                app_state.edit_queue.append(entry)
+            _sse_bus.push("queue_changed", {"action": "add", "name": entry["name"]})
+        return v_i, entry
+
+    with ThreadPoolExecutor(max_workers=min(3, len(all_video_tasks))) as pool:
+        indexed_results = list(pool.map(_exec_indexed, all_video_tasks))
+
+    all_added: List[Dict[str, Any]] = []
+    successful_videos = set()
+    for v_i, entry in indexed_results:
+        if entry is not None:
+            all_added.append(entry)
+            successful_videos.add(v_i)
+
+    processed_videos = len(successful_videos)
+
+    if not all_added:
+        raise HTTPException(status_code=400, detail="Không tải/cắt thành công cảnh nào. Vui lòng kiểm tra log.")
+
+    # 3. Ensure final edit_queue preserves exact deterministic order (all_added order)
     with STATE_LOCK:
+        added_paths = {e["clip_path"] for e in all_added}
+        prior_queue = [e for e in app_state.edit_queue if (e.get("clip_path") or e.get("path")) not in added_paths]
+        app_state.edit_queue = prior_queue + all_added
         app_state.save_session()
 
     _sse_bus.push("queue_changed", {"action": "batch_add", "count": len(all_added)})
-    app_state.log(f"✅ Hoàn tất cắt tất cả video: Đã chuyển {len(all_added)} cảnh của {processed_videos}/{total_videos} video sang Tab 2!", "ok")
+    app_state.log(f"✅ Hoàn tất cắt 3 luồng: Đã chuyển {len(all_added)} cảnh của {processed_videos}/{total_videos} video sang Tab 2!", "ok")
     return {"status": "ok", "added_count": len(all_added), "entries": all_added, "processed_videos": processed_videos}
 
 class UpdateEditRequest(BaseModel):
@@ -3152,8 +2913,9 @@ def delete_batch(req: BatchDeleteRequest):
 def _extract_first_frame(clip: Path) -> Optional[Image.Image]:
     """Extract first frame in-memory in < 15ms using OpenCV VideoCapture with pipe fallback."""
     key = str(clip)
-    if key in app_state.frame_cache:
-        return app_state.frame_cache[key]
+    cached = app_state.get_cached_frame(key)
+    if cached is not None:
+        return cached
     if not clip.exists():
         return None
 
@@ -3165,7 +2927,7 @@ def _extract_first_frame(clip: Path) -> Optional[Image.Image]:
             cap.release()
             if ret and frame is not None and frame.size > 0:
                 img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                app_state.frame_cache[key] = img
+                app_state.put_cached_frame(key, img)
                 return img
     except Exception:
         pass
@@ -3179,7 +2941,7 @@ def _extract_first_frame(clip: Path) -> Optional[Image.Image]:
         )
         if r.returncode == 0 and r.stdout and len(r.stdout) > 100:
             img = Image.open(io.BytesIO(r.stdout)).convert("RGB")
-            app_state.frame_cache[key] = img
+            app_state.put_cached_frame(key, img)
             return img
     except Exception:
         pass
@@ -3501,6 +3263,7 @@ def _run_single_analysis(
             app_state.video_results[norm_k]["status"] = ST_ANALYZING
             scaled_dur = (vid_dur_hint / ds_speedup) if vid_dur_hint else None
 
+            min_score = float(app_state.config.get("min_viral_score", 6.0))
             result = analyze_video(
                 client, sdk, remote,
                 video_path.name, _make_logger(log), stop_event,
@@ -3508,6 +3271,7 @@ def _run_single_analysis(
                 model_name=model_name,
                 include_cta=include_cta,
                 mode=mode,
+                min_viral_score=min_score,
             )
 
             # Scale timestamps from sped-up timeline back to original
@@ -3546,6 +3310,7 @@ def _run_single_analysis(
                     vid_duration=vid_dur_hint,
                     rejected_timestamps=rejected_ts,
                     mode=mode,
+                    min_viral_score=min_score,
                 )
 
         except InterruptedError:
@@ -3936,6 +3701,7 @@ def _run_single_youtube_analysis(
         sdk = None
         try:
             client, sdk = build_client(key)
+            min_score = float(app_state.config.get("min_viral_score", 6.0))
             result = analyze_video(
                 client, sdk, url, vid_title,
                 _make_logger(log),
@@ -3944,21 +3710,44 @@ def _run_single_youtube_analysis(
                 model_name=model_name,
                 include_cta=include_cta,
                 mode=mode,
+                min_viral_score=min_score,
             )
             rotator.release(key)
             break
         except Exception as exc:
-            rotator.penalize(key, KeyRotator.COOLDOWN_GENERIC)
+            err_str = str(exc)
             rotator.release(key)
             last_exc = exc
-            log("warn", f"[{vid_title}] Key [...{key[-6:]}] failed: {str(exc)[:80]}")
+
+            # Detect YouTube video unavailable / restricted from Google Gemini
+            is_yt_resource_denied = (
+                "403" in err_str and
+                any(phrase in err_str.lower() for phrase in [
+                    "caller does not have permission",
+                    "permission_denied",
+                    "video unavailable",
+                ])
+            )
+            if is_yt_resource_denied:
+                user_msg = "Video YouTube không khả dụng (người tải lên đã xóa, đặt Riêng tư hoặc bị hạn chế). Gemini không thể truy cập video này."
+                log("error", f"[{vid_title}] {user_msg}")
+                with STATE_LOCK:
+                    app_state.video_results[norm_k] = {
+                        "status": ST_ERROR, "candidates": [], "error": user_msg
+                    }
+                    app_state.save_session()
+                _sse_bus.push("videos_changed", {"path": norm_k, "status": ST_ERROR})
+                return
+
+            rotator.penalize(key, KeyRotator.COOLDOWN_GENERIC)
+            log("warn", f"[{vid_title}] Key [...{key[-6:]}] failed: {err_str[:80]}")
             if attempt < n_keys - 1:
                 time.sleep(0.5)
             else:
                 log("error", f"[{vid_title}] All {n_keys} API keys failed: {exc}")
                 with STATE_LOCK:
                     app_state.video_results[norm_k] = {
-                        "status": ST_ERROR, "candidates": [], "error": str(exc)[:80]
+                        "status": ST_ERROR, "candidates": [], "error": err_str[:80]
                     }
                     app_state.save_session()
                 _sse_bus.push("videos_changed", {"path": norm_k, "status": ST_ERROR})
@@ -5182,6 +4971,7 @@ class QueueExportItem(BaseModel):
     # backend skips PIL _make_title_image entirely and passes this PNG to FFmpeg
     # directly — guarantees 100% WYSIWYG with the live preview.
     title_overlay_b64: Optional[str] = None
+    timed_text_overlays: Optional[List[Dict[str, Any]]] = None
 
 class QueueExportRequest(BaseModel):
     items: List[QueueExportItem] = []
@@ -5297,12 +5087,31 @@ def _run_queue_export_inner(req: QueueExportRequest, total_overall: int, complet
         app_state.export_progress["current"] = f"Rendering {dst.name}..."
 
         tmp_overlay = None
+        tmp_timed_pngs: list[Path] = []
         try:
+            import base64, tempfile, uuid
+            _uid = uuid.uuid4().hex[:12]
+            _safe_stem = re.sub(r"[^A-Za-z0-9._\-]", "_", clip_path.stem[:20])
             if item.title_overlay_b64:
-                import base64, tempfile
                 png_bytes = base64.b64decode(item.title_overlay_b64)
-                tmp_overlay = Path(tempfile.mktemp(suffix="_title_overlay.png"))
+                tmp_overlay = Path(tempfile.gettempdir()) / f"title_overlay_{_uid}_{_safe_stem}.png"
                 tmp_overlay.write_bytes(png_bytes)
+            if item.timed_text_overlays:
+                timed_entries = []
+                for idx_t, t_obj in enumerate(item.timed_text_overlays):
+                    b64_str = t_obj.get("b64")
+                    if not b64_str:
+                        continue
+                    t_png = Path(tempfile.gettempdir()) / f"timed_txt_{_uid}_{idx_t}_{_safe_stem}.png"
+                    t_png.write_bytes(base64.b64decode(b64_str))
+                    tmp_timed_pngs.append(t_png)
+                    timed_entries.append({
+                        "path": str(t_png),
+                        "start_time": float(t_obj.get("start_time", 0.0) or 0.0),
+                        "end_time": float(t_obj.get("end_time", 0.0) or 0.0),
+                    })
+                if timed_entries:
+                    edit_state = {**edit_state, "_timed_text_pngs": timed_entries}
         except Exception as _oe:
             app_state.log(f"Could not decode title overlay PNG, falling back to PIL: {_oe}", "warn")
             tmp_overlay = None
@@ -5356,6 +5165,9 @@ def _run_queue_export_inner(req: QueueExportRequest, total_overall: int, complet
         finally:
             if tmp_overlay and tmp_overlay.exists():
                 try: tmp_overlay.unlink(missing_ok=True)
+                except Exception: pass
+            for _tp in tmp_timed_pngs:
+                try: _tp.unlink(missing_ok=True)
                 except Exception: pass
 
         _on_item_finish()
@@ -5502,7 +5314,8 @@ def _run_all_batches_export(req: QueueExportRequest):
                         clip_path=it.get("clip_path") or it.get("path", ""),
                         title=it.get("title") or it.get("state", {}).get("title", ""),
                         state=it.get("state", {}),
-                        title_overlay_b64=it.get("title_overlay_b64")
+                        title_overlay_b64=it.get("title_overlay_b64"),
+                        timed_text_overlays=it.get("timed_text_overlays"),
                     )
                     for it in b_items
                 ],
@@ -5855,7 +5668,7 @@ def get_youtube_history_endpoint(limit: int = 100):
 
 @app.post("/api/youtube/lookup")
 def lookup_youtube_endpoint(req: YouTubeLookupRequest):
-    return {"results": yt_history_manager.lookup(req.query)}
+    return yt_history_manager.lookup_with_meta(req.query)
 
 class YouTubeBatchAddRequest(BaseModel):
     urls: Optional[List[str]] = None
@@ -6014,6 +5827,7 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
         key = rotator.acquire()
         try:
             client, sdk = build_client(key)
+            min_score = float(app_state.config.get("min_viral_score", 6.0))
             result = analyze_video(
                 client, sdk, url, vid_title,
                 _make_logger(lambda lvl, msg: app_state.log(msg, lvl)),
@@ -6022,6 +5836,7 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
                 model_name=model_name,
                 include_cta=include_cta,
                 mode=req.mode,
+                min_viral_score=min_score,
             )
             rotator.release(key)
             candidates = result.get("candidates", [])
@@ -6054,9 +5869,12 @@ def analyze_yt_endpoint(req: YouTubeAnalyzeRequest):
                 "asset_code": yt_rec.get("asset_code", ""),
             }
         except Exception as e:
-            rotator.penalize(key, KeyRotator.COOLDOWN_GENERIC)
+            err_str = str(e)
             rotator.release(key)
             last_err = e
+            if "403" in err_str and any(w in err_str.lower() for w in ["caller does not have permission", "permission_denied", "video unavailable"]):
+                raise HTTPException(status_code=400, detail="Video YouTube này không khả dụng (người tải lên đã xóa, đặt Riêng tư hoặc bị hạn chế bản quyền/độ tuổi). Gemini không thể truy cập nội dung.")
+            rotator.penalize(key, KeyRotator.COOLDOWN_GENERIC)
             app_state.log(f"Gemini YT analysis error with key [...{key[-6:]}]: {e}", "warn")
             continue
 
@@ -6151,9 +5969,6 @@ def download_yt_segment_endpoint(req: YouTubeDownloadRequest):
         batch_id = app_state.active_batch_id
         if batch_id and batch_id in app_state.batches:
             entry["batch_id"] = batch_id
-            b_queue = app_state.batches[batch_id].setdefault("edit_queue", [])
-            b_queue.append(entry)
-            app_state.batches[batch_id]["count"] = len(b_queue)
 
         app_state.edit_queue = [e for e in app_state.edit_queue if (e.get("clip_path") or e.get("path")) != str(dst_p)]
         app_state.edit_queue.append(entry)
@@ -6192,7 +6007,7 @@ async def get_update_status():
             "release_date": remote_data.get("release_date", ""),
         }
     except Exception as e:
-        local_ver = "2.10.0"
+        local_ver = "2.12.0"
         try:
             from updater import get_local_version
             local_ver = get_local_version()

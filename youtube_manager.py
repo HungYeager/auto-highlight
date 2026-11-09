@@ -211,39 +211,115 @@ class YouTubeHistoryManager:
                 self._save_unlocked()
                 self._sync_csv_unlocked(output_folder)
 
-    def lookup(self, query: str) -> List[Dict[str, Any]]:
-        """Find videos by Asset Code, YouTube ID, or Title keyword."""
-        q = (query or "").strip().lower()
-        if not q:
+    def _match_single_token_unlocked(self, token: str) -> List[Dict[str, Any]]:
+        """Match a single query token (Asset Code, Clip Code like H28104901, Filename, YT URL/ID, or Title)."""
+        t = (token or "").strip()
+        if not t:
             return []
 
-        results = []
-        with self.lock:
-            # Check exact code match first (support both with and without _)
-            upper_q = q.upper()
-            upper_q_clean = upper_q.replace("_", "")
-            if upper_q in self.by_code:
-                rec = self.by_yt_id.get(self.by_code[upper_q])
+        # 1. Check if token is a YouTube URL or 11-char ID
+        extracted_id = extract_youtube_id(t)
+        if extracted_id and extracted_id in self.by_yt_id:
+            return [self.by_yt_id[extracted_id]]
+
+        # 2. If token looks like a clip filename (e.g. "H31100103_Police Track Down.mp4"), extract code prefix
+        stem = re.sub(r"\.(mp4|mkv|mov|webm|avi)$", "", t, flags=re.I).strip()
+        code_candidate = stem.split("_")[0].strip() if "_" in stem else stem
+        upper_cand = code_candidate.upper().replace("_", "")
+
+        # Direct code match
+        if upper_cand in self.by_code:
+            rec = self.by_yt_id.get(self.by_code[upper_cand])
+            if rec:
+                return [rec]
+        for c_key, yid in self.by_code.items():
+            c_clean = c_key.replace("_", "").upper()
+            if c_clean == upper_cand:
+                rec = self.by_yt_id.get(yid)
                 if rec:
                     return [rec]
-            for c_key, yid in self.by_code.items():
-                if c_key.replace("_", "").upper() == upper_q_clean:
-                    rec = self.by_yt_id.get(yid)
-                    if rec:
-                        return [rec]
+            # Clip code match: e.g. H28104901 (base code H281049 + 2-digit clip index 01)
+            if len(upper_cand) >= len(c_clean) + 1 and upper_cand.startswith(c_clean) and upper_cand[len(c_clean):].isdigit():
+                rec = self.by_yt_id.get(yid)
+                if rec:
+                    return [rec]
 
-            for rec in self.by_yt_id.values():
-                code = rec.get("asset_code", "").lower()
-                clean_code = code.replace("_", "")
-                yt_id = rec.get("yt_id", "").lower()
-                title = rec.get("title", "").lower()
-                url = rec.get("url", "").lower()
-                if q in code or q in clean_code or q in yt_id or q in title or q in url:
-                    results.append(rec)
+        # 3. Substring search across code, yt_id, title, url, and clip_names
+        q_low = t.lower()
+        q_clean = q_low.replace("_", "")
+        matched = []
+        for rec in self.by_yt_id.values():
+            code = rec.get("asset_code", "").lower()
+            clean_code = code.replace("_", "")
+            yt_id = rec.get("yt_id", "").lower()
+            title = rec.get("title", "").lower()
+            url = rec.get("url", "").lower()
+            clip_names_str = " ".join(rec.get("clip_names", [])).lower()
+            if (
+                q_low in code
+                or q_clean in clean_code
+                or q_low in yt_id
+                or q_low in title
+                or q_low in url
+                or q_low in clip_names_str
+            ):
+                matched.append(rec)
 
-        # Sort newest first
-        results.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        return results
+        matched.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return matched
+
+    def lookup_with_meta(self, query: str) -> Dict[str, Any]:
+        """Support both single search and batch lookup (multiple codes, filenames, or URLs)."""
+        raw = (query or "").strip()
+        if not raw:
+            return {"results": [], "not_found": [], "is_batch": False, "queried_count": 0}
+
+        # Split by newline, comma, semicolon, or tab first
+        lines = [p.strip() for p in re.split(r"[\r\n,;\t]+", raw) if p.strip()]
+
+        # If a single line has multiple whitespace-separated tokens that ALL look like codes or URLs, split by whitespace too
+        tokens: List[str] = []
+        code_or_url_re = re.compile(
+            r"^(?:https?://\S+|[A-Za-z]{1,8}\d{4,10}(?:_[^\s]+)?|[A-Za-z0-9_\-]{11})$"
+        )
+        for ln in lines:
+            parts = ln.split()
+            if len(parts) > 1 and all(code_or_url_re.match(p) for p in parts):
+                tokens.extend(parts)
+            else:
+                tokens.append(ln)
+
+        is_batch = len(tokens) > 1
+        seen_yt_ids = set()
+        results: List[Dict[str, Any]] = []
+        not_found: List[str] = []
+
+        with self.lock:
+            for tok in tokens:
+                hits = self._match_single_token_unlocked(tok)
+                if not hits:
+                    not_found.append(tok)
+                else:
+                    for h in hits:
+                        yid = h.get("yt_id") or h.get("asset_code")
+                        if yid not in seen_yt_ids:
+                            seen_yt_ids.add(yid)
+                            # Attach which query token matched if batch mode
+                            rec_copy = dict(h)
+                            if is_batch:
+                                rec_copy["matched_query"] = tok
+                            results.append(rec_copy)
+
+        return {
+            "results": results,
+            "not_found": not_found,
+            "is_batch": is_batch,
+            "queried_count": len(tokens),
+        }
+
+    def lookup(self, query: str) -> List[Dict[str, Any]]:
+        """Find videos by Asset Code(s), Clip Code(s), YouTube ID/URL(s), or Title keyword."""
+        return self.lookup_with_meta(query).get("results", [])
 
     def get_all(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Return history records sorted by newest first."""

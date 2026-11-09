@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  OpenCutStudio - Build + Package Release Script (PowerShell)
 #  Output: dist\OpenCutStudio_vX.Y.Z\
 #          dist\OpenCutStudio_vX.Y.Z.zip
@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $APP_NAME  = "OpenCutStudio"
-$VERSION   = "2.10.0"
+$VERSION   = "2.12.0"
 if (Test-Path "version.json") {
     try {
         $vJson = Get-Content "version.json" -Raw | ConvertFrom-Json

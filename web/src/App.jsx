@@ -21,105 +21,11 @@ import {
   Badge
 } from './components/ui';
 
-
-
-
-
-  // ── Default edit state ──
-const DEF = {
-  title: '',
-  font_name: 'impact', font_size: 52, font_bold: false, font_italic: false, title_uppercase: false,
-  text_color: 'white', text_color_hex: '#ffffff',
-  text_bg: 'box', text_align: 'left',
-  text_x: 0, text_y: 60, title_wrap_pct: 1.0,
-  text_opacity: 100, text_rotation: 0.0,
-  stroke_width: 2, stroke_color_hex: '#000000',
-  letter_spacing: 0, line_height: 1.2,
-  box_mode: 'frame', box_radius: 40,
-  box_pad_x: 30, box_pad_y: 20, box_opacity: 90,
-  box_bg_color: 'custom', box_bg_color_hex: '#222222',
-  source_mask_mode: 'top', source_mask_top: 0.0, source_mask_bottom: 0.0,
-  crop_top: 0.0, crop_bottom: 0.0, crop_left: 0.0, crop_right: 0.0,
-  video_x: 0, video_y: 0, video_w_scale: 1.0, video_h_scale: 1.0,
-  bg_type: 'blur', bg_image_path: '', bg_video_path: '',
-  color_grade: false, flip_h: false, flip_v: false,
-  hue_shift: 0, saturation: 1.0,
-  add_grain: false, grain_strength: 3, speed_tweak: false,
-  vignette_strength: 50,
-  subtitles: false, sub_style: 'Normal',
-  sub_engine: 'gemini_fallback',
-  sub_font_name: 'arialbd', sub_uppercase: false, sub_bold: true, sub_italic: false,
-  sub_font_size: 36, sub_margin_v: 200, sub_x: 0, sub_bg_box: false, sub_bg_box_color: '#000000', sub_bg_box_opacity: 80,
-  sub_highlight_color: '#FFD700', sub_dim_color: '#FFFFFF',
-  sub_offset_ms: -100,
-  watermark_text: '', watermark_pos: 'BR',
-  watermark_opacity: 50, watermark_size: 28, watermark_color: '#FFFFFF',
-  custom_audio_path: '', custom_audio_name: '', custom_audio_url: '',
-  custom_audio_dur: 0.0, custom_audio_offset: 0.0,
-  custom_audio_trim_start: 0.0, custom_audio_trim_dur: 0.0,
-  video_trim_dur: 0.0,
-  orig_volume: 100, custom_volume: 100,
-  title_lines: null,
-};
-
-// ── Font family map (shared across preview, canvas overlay, and font measurements) ──
-const FONT_MAP = {
-  impact:          'Impact, "Arial Narrow", sans-serif',
-  arialbd:         '"Arial Black", Arial, sans-serif',
-  arial:           'Arial, sans-serif',
-  bebas:           '"Bebas Neue", Impact, sans-serif',
-  anton:           '"Anton", Impact, sans-serif',
-  ariblk:          '"Arial Black", Impact, sans-serif',
-  gothicb:         '"Century Gothic", Futura, sans-serif',
-  verdanab:        'Verdana, Geneva, sans-serif',
-  calibrib:        'Calibri, "Gill Sans", sans-serif',
-  comicbd:         '"Comic Sans MS", Chalkboard, sans-serif',
-  trebucbd:        '"Trebuchet MS", Tahoma, sans-serif',
-  montserrat:      'Montserrat, "Trebuchet MS", sans-serif',
-  luckiestguy:     '"Luckiest Guy", Impact, cursive',
-  nunito:          'Nunito, "Century Gothic", sans-serif',
-  permanentmarker: '"Permanent Marker", "Comic Sans MS", cursive',
-};
-
-// ── Deterministic Word Wrapping Helper matching Preview, Canvas Overlay, and PIL ──
-const wrapTitleText = (text, fontSpec, maxTextW, letterSpacing = 0) => {
-  if (!text || !text.trim()) return [];
-  const offCtx = document.createElement('canvas').getContext('2d');
-  offCtx.font = fontSpec;
-  if (letterSpacing) offCtx.letterSpacing = `${letterSpacing}px`;
-
-  const clean = text.replace(/\r/g, '').trim();
-  const paragraphs = clean.split('\n');
-  const allLines = [];
-
-  for (const para of paragraphs) {
-    const words = para.split(' ').filter(Boolean);
-    if (!words.length) {
-      allLines.push('');
-      continue;
-    }
-    let cur = [];
-    for (const word of words) {
-      const test = cur.length ? cur.join(' ') + ' ' + word : word;
-      if (offCtx.measureText(test).width <= maxTextW) {
-        cur.push(word);
-      } else {
-        if (cur.length) {
-          allLines.push(cur.join(' '));
-          cur = [word];
-        } else {
-          allLines.push(word);
-          cur = [];
-        }
-      }
-    }
-    if (cur.length) {
-      allLines.push(cur.join(' '));
-    }
-  }
-  return allLines.length ? allLines : [text];
-};
-
+import { DEF, FONT_MAP, wrapTitleText, buildTitleOverlayBlob, buildTimedCustomTextBlobs } from './utils/canvasCompositor';
+import YouTubeModal from './components/YouTubeModal';
+import FacebookReelsMockup from './components/FacebookReelsMockup';
+import CustomTextStageLayer from './components/CustomTextStageLayer';
+import CustomTextInspector from './components/CustomTextInspector';
 // ── App ──
 export default 
 function App() {
@@ -196,7 +102,18 @@ const [fonts, setFonts]     = useState([]);
   const [ytHistoryList, setYtHistoryList]         = useState([]);
   const [ytHistorySearch, setYtHistorySearch]     = useState('');
   const [ytHistoryLoading, setYtHistoryLoading]   = useState(false);
+  const [minScoreFilter, setMinScoreFilter]       = useState(() => {
+    const saved = localStorage.getItem('minScoreFilter');
+    return saved !== null ? Number(saved) : 6;
+  });
   const [ytCopiedCode, setYtCopiedCode]           = useState('');
+  const [ytCopiedAssetCode, setYtCopiedAssetCode] = useState('');
+  const copyAssetCode = (code) => {
+    if (!code) return;
+    navigator.clipboard.writeText(code);
+    setYtCopiedAssetCode(code);
+    setTimeout(() => setYtCopiedAssetCode(''), 2000);
+  };
   const [ytCodePrefix, setYtCodePrefix]           = useState(() => localStorage.getItem('ytCodePrefix') || 'COP');
   const [ytDownloadErrors, setYtDownloadErrors]   = useState({}); // { [candIdx]: string }
   const [redownloadingMap, setRedownloadingMap]   = useState({}); // { [clipPath]: boolean }
@@ -273,6 +190,22 @@ const dragFinalSub  = useRef(null);
       i === selEditIdx ? { ...item, state: { ...item.state, ...patch } } : item
     ));
     post('/edit_queue/update', { index: selEditIdx, patch });
+  }, [selEditIdx]);
+
+  // ── Freeform Custom Text Layers & Facebook Reels Mobile UI Mockup State ──
+  const [selCustomTextIdx, setSelCustomTextIdx] = useState(-1);
+  const [fbMockupEnabled, setFbMockupEnabled]   = useState(false);
+  const [fbMockupMode, setFbMockupMode]         = useState('vector'); // 'vector' | 'image'
+  const [fbMockupOpacity, setFbMockupOpacity]   = useState(85);
+
+  const updateCustomTexts = useCallback((nextCustomTexts, commitToServer = true) => {
+    if (selEditIdx < 0) return;
+    setEditQueue(prev => prev.map((item, i) =>
+      i === selEditIdx ? { ...item, state: { ...item.state, custom_texts: nextCustomTexts } } : item
+    ));
+    if (commitToServer) {
+      post('/edit_queue/update', { index: selEditIdx, patch: { custom_texts: nextCustomTexts } });
+    }
   }, [selEditIdx]);
 
   // ── Debounced Title Auto-Save & Synchronization ─────────────────────────────────
@@ -434,10 +367,12 @@ const dragFinalSub  = useRef(null);
     else setSelOverlayIdx(-1);
     if (type === 'blur_box') setSelBlurBoxIdx(id);
     else setSelBlurBoxIdx(-1);
+    if (type === 'custom_text' && id !== null && id >= 0) setSelCustomTextIdx(id);
 
     const sectionMap = {
       video: 'section-video',
       title: 'section-title',
+      custom_text: 'section-custom-text',
       subtitle: 'section-subtitles',
       overlay: 'section-multitrack',
       blur_box: 'section-blur',
@@ -932,6 +867,9 @@ useEffect(() => {
           if (ocrR && ocrR.device) setOcrInfo(ocrR);
         } catch {}
         setConfig(p => ({ ...p, ...cfgR }));
+        if (cfgR && cfgR.min_viral_score !== undefined) {
+          setMinScoreFilter(Number(cfgR.min_viral_score));
+        }
         if (cfgR && cfgR.youtube_code_prefix) {
           setYtCodePrefix(cfgR.youtube_code_prefix);
         }
@@ -1000,7 +938,9 @@ try {
   const saveEditPreset = async () => {
     const n = editPresetName.trim();
     if (!n) { alert('Nhập tên preset'); return; }
-    await post('/edit_presets/save', { name: n, state: editState });
+    // Exclude clip-specific title and title_lines from visual styling presets
+    const { title: _t, title_lines: _tl, ...presetState } = editState;
+    await post('/edit_presets/save', { name: n, state: presetState });
     setEditPresetName('');
     refreshEditPresets();
   };
@@ -1008,7 +948,10 @@ try {
     if (selEditIdx < 0) { alert('Chọn một clip trước'); return; }
     try {
       const r = await fetch(`${API}/edit_presets/${encodeURIComponent(name)}`).then(r => r.json());
-      if (r.state) patchEdit(r.state);
+      if (r.state) {
+        const { title: _t, title_lines: _tl, ...cleanState } = r.state;
+        patchEdit({ ...cleanState, title_lines: null });
+      }
     } catch {}
   };
   const delEditPreset = async (name) => {
@@ -2197,18 +2140,88 @@ const addFiles = async () => {
   };
 
   // ── YouTube History & Lookup Handlers ──
+  const [ytHistoryMeta, setYtHistoryMeta] = useState({ notFound: [], isBatch: false, queriedCount: 0 });
+
   const fetchYtHistory = useCallback(async (query = '') => {
     setYtHistoryLoading(true);
     try {
-      if (query && query.trim()) {
-        const res = await post('/youtube/lookup', { query: query.trim() });
+      const raw = (query || '').trim();
+      if (raw) {
+        const res = await post('/youtube/lookup', { query: raw });
         if (res.ok) {
           const data = await res.json();
-          setYtHistoryList(data.results || []);
+          // If backend returned batch metadata (lookup_with_meta), use it directly
+          if (typeof data.queried_count === 'number') {
+            setYtHistoryList(data.results || []);
+            setYtHistoryMeta({
+              notFound: data.not_found || [],
+              isBatch: Boolean(data.is_batch),
+              queriedCount: data.queried_count || 0,
+            });
+            return;
+          }
+          // Fallback: if running against an un-restarted backend, run smart multi-token batch matching in JS
+          const lines = raw.split(/[\r\n,;\t]+/).map(s => s.trim()).filter(Boolean);
+          const codeOrUrlRe = /^(?:https?:\/\/\S+|[A-Za-z]{1,8}\d{4,10}(?:_[^\s]+)?|[A-Za-z0-9_\-]{11})$/;
+          const tokens = [];
+          for (const ln of lines) {
+            const parts = ln.split(/\s+/);
+            if (parts.length > 1 && parts.every(p => codeOrUrlRe.test(p))) {
+              tokens.push(...parts);
+            } else {
+              tokens.push(ln);
+            }
+          }
+          if (tokens.length <= 1 && (data.results || []).length > 0) {
+            setYtHistoryList(data.results || []);
+            setYtHistoryMeta({ notFound: [], isBatch: false, queriedCount: 1 });
+            return;
+          }
+          const allRes = await fetch(`${API}/youtube/history?limit=2000`).then(r => r.json());
+          const allRecs = allRes.history || [];
+          const seen = new Set();
+          const matched = [];
+          const notFound = [];
+
+          for (const tok of tokens) {
+            const stem = tok.replace(/\.(mp4|mkv|mov|webm|avi)$/i, '').trim();
+            const codeCand = (stem.includes('_') ? stem.split('_')[0] : stem).toUpperCase().replace(/_/g, '');
+            const qLow = tok.toLowerCase();
+            const hits = allRecs.filter(rec => {
+              const cClean = (rec.asset_code || '').toUpperCase().replace(/_/g, '');
+              if (cClean && (cClean === codeCand || (codeCand.length >= cClean.length + 1 && codeCand.startsWith(cClean) && /^\d+$/.test(codeCand.slice(cClean.length))))) {
+                return true;
+              }
+              return (
+                (rec.asset_code || '').toLowerCase().includes(qLow) ||
+                (rec.yt_id || '').toLowerCase().includes(qLow) ||
+                (rec.title || '').toLowerCase().includes(qLow) ||
+                (rec.url || '').toLowerCase().includes(qLow)
+              );
+            });
+            if (hits.length === 0) {
+              notFound.push(tok);
+            } else {
+              for (const h of hits) {
+                const key = h.yt_id || h.asset_code;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  matched.push(tokens.length > 1 ? { ...h, matched_query: tok } : h);
+                }
+              }
+            }
+          }
+          setYtHistoryList(matched);
+          setYtHistoryMeta({
+            notFound,
+            isBatch: tokens.length > 1,
+            queriedCount: tokens.length,
+          });
         }
       } else {
-        const res = await fetch(`${API}/youtube/history?limit=100`).then(r => r.json());
+        const res = await fetch(`${API}/youtube/history?limit=200`).then(r => r.json());
         setYtHistoryList(res.history || []);
+        setYtHistoryMeta({ notFound: [], isBatch: false, queriedCount: 0 });
       }
     } catch (e) {
       console.error('Fetch YT history error:', e);
@@ -2473,844 +2486,44 @@ const addFiles = async () => {
     }
   };
 
-  const renderYouTubeModal = () => {
-    if (!showYtModal) return null;
-    return (
-      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-        <div className="bg-[#0f111c] border border-gray-800 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-          {/* Header */}
-          <div className="px-5 py-4 border-b border-gray-800/80 flex items-center justify-between bg-gradient-to-r from-red-950/30 to-indigo-950/20">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center">
-                <Youtube className="w-4 h-4 text-red-500" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  Phân Tích Video YouTube Trực Tiếp
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Gemini Visual AI</span>
-                </h3>
-                <p className="text-[11px] text-gray-400 mt-0.5">
-                  Không cần tải video về máy — Gemini soi trực tiếp hình ảnh &amp; âm thanh trên Google Cloud, chỉ tải lát cắt hay vào Studio
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowYtModal(false)}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800/60 transition"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Body */}
-          <div className="p-5 flex-1 overflow-y-auto space-y-4">
-            {/* Cookie Status & Bypass Section */}
-            {ytCookiesStatus.has_cookies ? (
-              <div className="px-3.5 py-2.5 bg-emerald-950/30 border border-emerald-800/40 rounded-xl flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-emerald-300 font-semibold">Cookie YouTube: Đã kết nối</span>
-                  <span className="text-[11px] text-gray-400">({ytCookiesStatus.filename || 'cookies.txt'} · {(ytCookiesStatus.size / 1024).toFixed(1)} KB)</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-200 border border-emerald-700/50">Tải được video 18+ &amp; chống bot</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleQuickPasteCookiesFromClipboard}
-                    className="text-[11px] text-emerald-400 hover:text-emerald-200 underline font-semibold flex items-center gap-1"
-                    title="Dán đè Cookie mới trực tiếp từ Clipboard"
-                  >
-                    <Clipboard className="w-3 h-3" />
-                    <span>Dán mới từ Clipboard</span>
-                  </button>
-                  <span className="text-gray-600">|</span>
-                  <button
-                    onClick={() => ytCookieFileInputRef.current?.click()}
-                    className="text-[11px] text-indigo-400 hover:text-indigo-300 underline"
-                    title="Cập nhật file cookie mới"
-                  >
-                    Đổi file
-                  </button>
-                  <span className="text-gray-600">|</span>
-                  <button
-                    onClick={handleDeleteCookies}
-                    className="text-[11px] text-red-400 hover:text-red-300"
-                    title="Xóa cookies đã lưu"
-                  >
-                    Xóa
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-3 bg-amber-950/25 border border-amber-800/40 rounded-xl space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-start gap-2">
-                    <span className="text-amber-400 text-sm mt-0.5">🍪</span>
-                    <div>
-                      <p className="text-xs font-bold text-amber-200">
-                        Chưa nạp Cookie YouTube (Khuyên dùng để chống chặn bot &amp; tải video 18+)
-                      </p>
-                      <p className="text-[11px] text-amber-300/80 mt-0.5">
-                        YouTube thường bắt xác minh bot hoặc đăng nhập với các video phóng sự, bodycam nhạy cảm. Nạp cookie giúp tải mọi video 100% mượt mà.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                  <button
-                    type="button"
-                    onClick={handleQuickPasteCookiesFromClipboard}
-                    className="px-3 py-1.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black text-xs font-bold rounded-lg flex items-center gap-1.5 transition shadow"
-                    title="Dán ngay cookie bạn vừa copy từ trình duyệt mà không cần chỉnh sửa file"
-                  >
-                    <Clipboard className="w-3.5 h-3.5" />
-                    <span>📋 Dán nhanh Cookie từ Clipboard (1-Click)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCookiePasteModal(true)}
-                    className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold rounded-lg transition"
-                  >
-                    📝 Mở ô Dán tay
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => ytCookieFileInputRef.current?.click()}
-                    className="px-2.5 py-1.5 bg-gray-900 hover:bg-gray-800 text-gray-400 text-xs rounded-lg transition"
-                  >
-                    <span>📂 Nạp file .txt</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCookieGuide(prev => !prev)}
-                    className="text-xs text-amber-400 hover:text-amber-300 underline ml-auto"
-                  >
-                    {showCookieGuide ? 'Ẩn hướng dẫn ▲' : '❓ Cách lấy cookie (30s) ▼'}
-                  </button>
-                </div>
-
-                {showCookieGuide && (
-                  <div className="mt-2 pt-2 border-t border-amber-800/40 text-[11px] text-gray-300 space-y-1.5 bg-black/40 p-3 rounded-lg">
-                    <p className="font-bold text-amber-300">3 bước đơn giản để lấy cookie:</p>
-                    <ol className="list-decimal list-inside space-y-1 text-gray-300">
-                      <li>
-                        Cài tiện ích Chrome/Edge:&nbsp;
-                        <a
-                          href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-indigo-400 hover:text-indigo-300 underline font-semibold"
-                        >
-                          Get cookies.txt LOCALLY (Bấm vào đây để mở trang cài đặt)
-                        </a>
-                      </li>
-                      <li>Mở tab <span className="text-white font-mono">youtube.com</span> (đảm bảo đang đăng nhập).</li>
-                      <li>Bấm vào biểu tượng tiện ích ở góc trình duyệt ➔ Chọn <strong>Copy</strong> (hoặc Export).</li>
-                      <li>Quay lại đây bấm nút <strong>"📋 Dán nhanh Cookie từ Clipboard"</strong> ➔ Xong ngay, không cần sửa file!</li>
-                    </ol>
-                    <p className="text-[10px] text-gray-400 italic mt-1">
-                      * File cookies được lưu cục bộ trên máy tính của bạn, hoàn toàn an toàn và bảo mật.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Sub Navigation: Single vs Batch vs History/Lookup */}
-            <div className="flex border-b border-gray-800 bg-black/30 rounded-xl p-1 gap-1">
-              <button
-                type="button"
-                onClick={() => setYtBatchTab('single')}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                  ytBatchTab === 'single'
-                    ? 'bg-red-950/60 text-white border border-red-800/60 shadow-sm'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-              >
-                <Youtube className="w-3.5 h-3.5 text-red-500" />
-                <span>Phân Tích 1 Video</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setYtBatchTab('batch')}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                  ytBatchTab === 'batch'
-                    ? 'bg-indigo-950/60 text-white border border-indigo-800/60 shadow-sm'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Nhập List Hàng Loạt</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setYtBatchTab('history');
-                  fetchYtHistory('');
-                }}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                  ytBatchTab === 'history'
-                    ? 'bg-purple-950/70 text-white border border-purple-800/60 shadow-sm'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-              >
-                <Search className="w-3.5 h-3.5 text-purple-400" />
-                <span>🏷️ Lịch Sử &amp; Tra Cứu Mã</span>
-              </button>
-            </div>
-
-            {ytBatchTab === 'batch' ? (
-              /* ── Batch YouTube Import Tab ── */
-              <div className="space-y-4 pt-1 animate-in fade-in duration-150">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                      <span>Dán danh sách link YouTube (Mỗi dòng 1 link hoặc cách nhau bằng dấu phẩy)</span>
-                    </label>
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex items-center gap-1.5 bg-black/40 border border-gray-700/80 px-2 py-0.5 rounded-lg">
-                        <span className="text-[10px] text-gray-400 font-medium">Tiền tố mã:</span>
-                        <input
-                          type="text"
-                          value={ytCodePrefix}
-                          onChange={e => handleUpdatePrefix(e.target.value)}
-                          placeholder="COP"
-                          maxLength={8}
-                          className="w-14 bg-black/60 border border-gray-600 rounded px-1.5 py-0.5 text-center font-mono font-bold text-indigo-300 text-[11px] uppercase focus:outline-none focus:border-indigo-400 transition"
-                          title="Tùy chỉnh tiền tố mã định danh cho toàn bộ danh sách nhập (VD: COP, VID, CAM...)"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const text = await navigator.clipboard.readText();
-                            if (text) {
-                              setYtBatchText(prev => prev ? `${prev}\n${text}` : text);
-                            }
-                          } catch (err) {
-                            alert('Trình duyệt chưa cấp quyền đọc Clipboard.');
-                          }
-                        }}
-                        className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-                      >
-                        <Clipboard className="w-3 h-3" />
-                        <span>Dán link từ Clipboard</span>
-                      </button>
-                    </div>
-                  </div>
-                  <textarea
-                    value={ytBatchText}
-                    onChange={e => setYtBatchText(e.target.value)}
-                    rows={6}
-                    placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/...&#10;https://www.youtube.com/shorts/..."
-                    className="w-full bg-black/60 border border-gray-700 rounded-xl p-3 text-xs font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                  />
-                  <div className="flex items-center justify-between text-[11px]">
-                    {(() => {
-                      const detected = parseYtUrls(ytBatchText);
-                      return (
-                        <span className={detected.length > 0 ? "text-emerald-400 font-semibold" : "text-gray-500"}>
-                          ✓ Đã phát hiện {detected.length} link YouTube hợp lệ
-                        </span>
-                      );
-                    })()}
-                    {ytBatchText && (
-                      <button
-                        type="button"
-                        onClick={() => setYtBatchText('')}
-                        className="text-gray-500 hover:text-gray-300 text-[10px]"
-                      >
-                        Xóa danh sách
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Mode selection for batch */}
-                <div className="bg-gray-900/40 border border-gray-800 rounded-xl p-3 space-y-2">
-                  <span className="text-[11px] font-semibold text-gray-300">Chế độ phân tích AI:</span>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label
-                      onClick={() => setYtMode('short')}
-                      className={`cursor-pointer rounded-xl p-3 border transition flex flex-col gap-1 ${
-                        ytMode === 'short'
-                          ? 'bg-red-950/40 border-red-500/60 ring-1 ring-red-500/40'
-                          : 'bg-gray-900/50 border-gray-800 hover:border-gray-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-white">⚡ Short Mode (16s)</span>
-                        <input type="radio" checked={ytMode === 'short'} onChange={() => setYtMode('short')} className="accent-red-500" />
-                      </div>
-                      <p className="text-[10px] text-gray-400">Tìm các pha giật gân, hành động, cao trào 16s chuẩn TikTok / Reels.</p>
-                    </label>
-                    <label
-                      onClick={() => setYtMode('story')}
-                      className={`cursor-pointer rounded-xl p-3 border transition flex flex-col gap-1 ${
-                        ytMode === 'story'
-                          ? 'bg-red-950/40 border-red-500/60 ring-1 ring-red-500/40'
-                          : 'bg-gray-900/50 border-gray-800 hover:border-gray-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-white">📖 Story Mode (90–120s / 1p30s–2p)</span>
-                        <input type="radio" checked={ytMode === 'story'} onChange={() => setYtMode('story')} className="accent-red-500" />
-                      </div>
-                      <p className="text-[10px] text-gray-400">Trích xuất câu chuyện trọn vẹn, phóng sự có mở đầu - cao trào - kết thúc.</p>
-                    </label>
-                  </div>
-                </div>
-
-                {/* Batch action buttons */}
-                <div className="flex items-center justify-end gap-2.5 pt-2">
-                  <button
-                    type="button"
-                    disabled={ytBatchBusy || parseYtUrls(ytBatchText).length === 0}
-                    onClick={() => handleBatchAddYouTube(false)}
-                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-200 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Thêm vào hàng đợi Tab 1</span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={ytBatchBusy || parseYtUrls(ytBatchText).length === 0}
-                    onClick={() => handleBatchAddYouTube(true)}
-                    className="px-5 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl transition shadow-lg flex items-center gap-1.5"
-                  >
-                    {ytBatchBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                    <span>Thêm &amp; Phân tích hàng loạt ngay</span>
-                  </button>
-                </div>
-              </div>
-            ) : ytBatchTab === 'history' ? (
-              /* ── History & Asset Code Lookup Tab ── */
-              <div className="space-y-4 pt-1 animate-in fade-in duration-150">
-                {/* Search bar */}
-                <div className="space-y-1.5">
-                  <div className="relative">
-                    <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={ytHistorySearch}
-                      onChange={e => setYtHistorySearch(e.target.value)}
-                      placeholder="Tra cứu nhanh theo Mã (VD: COP071001), Link YouTube, hoặc Tiêu đề video..."
-                      className="w-full bg-black/60 border border-gray-700 rounded-xl pl-9 pr-8 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition font-mono"
-                    />
-                    {ytHistorySearch && (
-                      <button
-                        onClick={() => setYtHistorySearch('')}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
-                    <span>
-                      {ytHistoryLoading ? (
-                        <span className="flex items-center gap-1 text-indigo-400">
-                          <Loader2 className="w-3 h-3 animate-spin" /> Đang tìm kiếm...
-                        </span>
-                      ) : (
-                        `Tìm thấy ${ytHistoryList.length} video trong lịch sử`
-                      )}
-                    </span>
-                    <span className="text-[10px] text-gray-500">
-                      File Excel đồng bộ tự động tại: <code className="text-gray-400 font-mono">output_clips/danh_sach_youtube_goc.csv</code>
-                    </span>
-                  </div>
-                </div>
-
-                {/* List of history records */}
-                <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-                  {ytHistoryList.length === 0 ? (
-                    <div className="text-center py-12 border border-dashed border-gray-800 rounded-xl">
-                      <p className="text-xs text-gray-500">Chưa tìm thấy video YouTube nào phù hợp.</p>
-                      <p className="text-[11px] text-gray-600 mt-1">Khi bạn dán link và cắt clip, mã quản lý sẽ tự động lưu vào đây.</p>
-                    </div>
-                  ) : (
-                    ytHistoryList.map(rec => (
-                      <div
-                        key={rec.yt_id || rec.asset_code}
-                        className="p-3 bg-gray-900/60 hover:bg-gray-900/90 border border-gray-800 hover:border-gray-700 rounded-xl flex items-center justify-between gap-3 transition group"
-                      >
-                        {/* Left: Code badge & Date */}
-                        <div className="flex items-start gap-3 min-w-0">
-                          <div className="flex flex-col items-center justify-center px-2.5 py-1.5 bg-gradient-to-br from-indigo-950/80 to-purple-950/80 border border-indigo-700/50 rounded-lg shrink-0">
-                            <span className="text-xs font-mono font-extrabold text-indigo-200 tracking-wider">
-                              {rec.asset_code}
-                            </span>
-                            <span className="text-[9px] text-indigo-400 font-medium mt-0.5">
-                              {rec.date_added || 'Hôm nay'}
-                            </span>
-                          </div>
-
-                          <div className="min-w-0">
-                            <h4 className="text-xs font-bold text-gray-100 truncate group-hover:text-white" title={rec.title}>
-                              {rec.title || 'YouTube Video'}
-                            </h4>
-                            <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
-                              <span className="font-mono text-gray-500 text-[10px] truncate max-w-xs">{rec.url}</span>
-                              <span>·</span>
-                              <span className="text-emerald-400 font-medium text-[10px]">{rec.clips_count || 0} clips đã cắt</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Right: Actions */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => window.open(rec.url, '_blank')}
-                            className="px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/50 hover:border-red-600/60 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
-                            title="Mở video này trên YouTube"
-                          >
-                            <ExternalLink className="w-3 h-3 text-red-400" />
-                            <span>Mở YouTube</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(rec.url);
-                              setYtCopiedCode(rec.asset_code);
-                              setTimeout(() => setYtCopiedCode(''), 2000);
-                            }}
-                            className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
-                            title="Sao chép link YouTube gốc"
-                          >
-                            {ytCopiedCode === rec.asset_code ? (
-                              <>
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span className="text-emerald-400">Đã chép!</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3 text-gray-400" />
-                                <span>Copy Link</span>
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setYtUrl(rec.url);
-                              setYtBatchTab('single');
-                            }}
-                            className="px-2.5 py-1.5 bg-indigo-950/50 hover:bg-indigo-900/70 text-indigo-300 border border-indigo-800/50 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
-                            title="Tải hoặc phân tích lại video này"
-                          >
-                            <Zap className="w-3 h-3 text-indigo-400" />
-                            <span>Dùng lại</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            ) : (
-              /* ── Single Video Analysis Tab ── */
-              <div className="space-y-4 pt-1 animate-in fade-in duration-150">
-                {/* Input URL & Mode */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-medium text-gray-300 flex items-center gap-1.5">
-                      <span>Dán link YouTube (Public hoặc Unlisted)</span>
-                      <span className="text-[10px] text-gray-500">· Hỗ trợ link youtube.com hoặc youtu.be</span>
-                    </label>
-                    <div className="flex items-center gap-1.5 bg-black/40 border border-gray-700/80 px-2 py-0.5 rounded-lg">
-                      <span className="text-[10px] text-gray-400 font-medium">Tiền tố mã:</span>
-                      <input
-                        type="text"
-                        value={ytCodePrefix}
-                        onChange={e => handleUpdatePrefix(e.target.value)}
-                        placeholder="COP"
-                        maxLength={8}
-                        className="w-14 bg-black/60 border border-gray-600 rounded px-1.5 py-0.5 text-center font-mono font-bold text-indigo-300 text-[11px] uppercase focus:outline-none focus:border-indigo-400 transition"
-                        title="Tùy chỉnh tiền tố mã định danh (VD: COP, VID, CAM...). Mặc định là COP"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <input
-                        type="text"
-                        value={ytUrl}
-                        onChange={e => setYtUrl(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter' && ytStatus !== 'analyzing') handleAnalyzeYouTube(); }}
-                        placeholder="https://www.youtube.com/watch?v=..."
-                        className="w-full bg-black/60 border border-gray-700 rounded-xl px-3.5 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-red-500 transition"
-                      />
-                      {ytUrl && (
-                        <button
-                          onClick={() => setYtUrl('')}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Mode Selector */}
-                    <div className="flex bg-black/40 border border-gray-700/80 rounded-xl p-0.5 gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setYtMode('short')}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                          ytMode === 'short' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'
-                        }`}
-                      >
-                        ⚡ Short (16s)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setYtMode('story')}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                          ytMode === 'story' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
-                        }`}
-                      >
-                        🎥 Story (90–120s / 1p30s–2p)
-                      </button>
-                    </div>
-
-                    <button
-                      onClick={handleAnalyzeYouTube}
-                      disabled={ytStatus === 'analyzing' || !ytUrl.trim()}
-                      className="px-4 py-2 bg-gradient-to-r from-red-600 to-indigo-600 hover:from-red-500 hover:to-indigo-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition shadow-lg shrink-0"
-                    >
-                      {ytStatus === 'analyzing' ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>Đang xem video...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>Soi Highlight</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Real-time Duplicate Warning or Planned Asset Code */}
-                  {ytDupCheck?.exists && (
-                    <div className="p-3 bg-amber-950/40 border border-amber-600/50 rounded-xl flex items-center justify-between animate-in fade-in">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold shrink-0">
-                          ⚠️
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-amber-200">Video này đã làm ngày {ytDupCheck.record?.date_added}!</span>
-                            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold text-[11px] border border-amber-500/40">
-                              {ytDupCheck.record?.asset_code}
-                            </span>
-                            <span className="text-[10px] text-gray-400">
-                              ({ytDupCheck.record?.clips_count || 0} clips đã cắt)
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-amber-300/80 truncate max-w-lg mt-0.5">
-                            {ytDupCheck.record?.title}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => window.open(ytDupCheck.record?.url, '_blank')}
-                          className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold rounded-lg flex items-center gap-1 transition"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          <span>Mở YouTube gốc</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(ytDupCheck.record?.url);
-                            alert('✅ Đã copy link YouTube gốc!');
-                          }}
-                          className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold rounded-lg flex items-center gap-1 transition"
-                        >
-                          <Copy className="w-3 h-3" />
-                          <span>Copy Link</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {!ytDupCheck?.exists && ytDupCheck?.next_code && (
-                    <div className="px-3 py-1.5 bg-indigo-950/30 border border-indigo-800/40 rounded-xl flex items-center justify-between text-[11px] animate-in fade-in">
-                      <span className="text-gray-400 flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                        Video mới — Mã quản lý tự động sẽ cấp:
-                      </span>
-                      <span className="font-mono font-bold text-indigo-300 bg-indigo-900/60 px-2.5 py-0.5 rounded-lg border border-indigo-700/50">
-                        🏷️ {ytDupCheck.next_code}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Error banner */}
-                {ytError && (
-                  <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl text-xs text-red-300 flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="font-semibold">Lỗi phân tích:</p>
-                      <p className="text-[11px] text-red-400/90 mt-0.5">{ytError}</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Analyzing state */}
-                {ytStatus === 'analyzing' && (
-                  <div className="py-10 flex flex-col items-center justify-center text-center space-y-3">
-                    <div className="relative">
-                      <div className="w-14 h-14 rounded-full bg-red-600/20 border-2 border-red-500/40 flex items-center justify-center animate-pulse">
-                        <Youtube className="w-7 h-7 text-red-500 animate-bounce" />
-                      </div>
-                      <div className="absolute inset-0 rounded-full border-2 border-indigo-500 animate-ping opacity-25" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-white">Gemini đang giải mã và xem video</h4>
-                      <p className="text-xs text-gray-400 mt-1 max-w-md">
-                        Google Cloud đang phân tích các khung hình hành động, cao trào và âm thanh trực tiếp từ YouTube. Quá trình mất khoảng 5–15 giây...
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Results: Info + Highlights */}
-                {ytStatus === 'done' && (
-                  <div className="space-y-4 animate-in fade-in duration-300">
-                    {/* YouTube Video Info Card */}
-                    {ytInfo && (
-                      <div className="p-3 bg-black/40 border border-gray-800 rounded-xl flex items-center gap-3.5">
-                        {ytInfo.thumbnail ? (
-                          <img
-                            src={ytInfo.thumbnail}
-                            alt="thumbnail"
-                            className="w-24 h-14 object-cover rounded-lg border border-gray-800 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-24 h-14 bg-gray-900 rounded-lg flex items-center justify-center text-gray-600 shrink-0">
-                            <Youtube className="w-6 h-6" />
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-bold text-white truncate" title={ytInfo.title}>
-                            {ytInfo.title}
-                          </p>
-                          <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-1">
-                            {ytInfo.uploader && <span>Kênh: <strong className="text-gray-300">{ytInfo.uploader}</strong></span>}
-                            {ytInfo.duration > 0 && (
-                              <span>Thời lượng: <strong className="text-emerald-400">{Math.floor(ytInfo.duration / 60)}m{Math.floor(ytInfo.duration % 60)}s</strong></span>
-                            )}
-                            <span className="text-indigo-400 font-medium">⚡ Đã tìm thấy {ytCandidates.length} highlight</span>
-                          </div>
-                        </div>
-                        {ytCandidates.length > 1 && (
-                          <button
-                            onClick={handleDownloadAllYtCandidates}
-                            disabled={ytDownloadAllBusy}
-                            className="px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shrink-0 flex items-center gap-1.5 transition shadow"
-                          >
-                            {ytDownloadAllBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-200" /> : <Download className="w-3.5 h-3.5" />}
-                            <span>{ytDownloadAllBusy ? 'Đang tải 3 luồng cùng lúc...' : `Tải tất cả (${ytCandidates.length}) - 3 luồng song song`}</span>
-                          </button>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Candidate List */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
-                        <span className="font-semibold uppercase tracking-wider text-[10px] text-gray-500">Danh sách Highlight phát hiện bởi Gemini:</span>
-                        <span>Tải cùng lúc 3 luồng song song vào Canvas</span>
-                      </div>
-
-                      {ytCandidates.length === 0 ? (
-                        <div className="p-6 text-center text-gray-500 text-xs border border-dashed border-gray-800 rounded-xl">
-                          Gemini không phát hiện khoảnh khắc nào thực sự kịch tính đạt tiêu chuẩn. Thử đổi sang chế độ Story hoặc link khác.
-                        </div>
-                      ) : (
-                        ytCandidates.map((cand, idx) => {
-                          const isDownloaded = ytDownloadedSet.has(idx);
-                          const downloadInfo = ytDownloadingMap[idx];
-                          const isDownloading = Boolean(downloadInfo);
-                          return (
-                            <div
-                              key={idx}
-                              className={`p-3.5 bg-gray-900/40 hover:bg-gray-900/70 border rounded-xl transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                                isDownloading
-                                  ? 'border-indigo-500/70 bg-indigo-950/20 shadow-[0_0_15px_rgba(99,102,241,0.15)]'
-                                  : isDownloaded
-                                  ? 'border-emerald-800/40 bg-emerald-950/10'
-                                  : 'border-gray-800/80 hover:border-gray-700'
-                              }`}
-                            >
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-300 border border-red-800/50 text-[9px] font-bold font-mono">
-                                    #{idx + 1}
-                                  </span>
-                                  <span className="px-2 py-0.5 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/40 text-[9px] font-mono font-semibold">
-                                    ⏱ {cand.start_time} ➔ {cand.end_time} ({cand.clip_duration || 16}s)
-                                  </span>
-                                </div>
-                                <h5 className="text-xs font-bold text-white text-left break-words">
-                                  {cand.title}
-                                </h5>
-                                {cand.highlight_reason && (
-                                  <p className="text-[11px] text-gray-400 mt-1 text-left line-clamp-2">
-                                    💡 {cand.highlight_reason}
-                                  </p>
-                                )}
-
-                                {/* Lỗi tải về hoặc mất mạng kèm nút thử lại */}
-                                {ytDownloadErrors[idx] && (
-                                  <div className="mt-2 p-2 rounded-xl bg-red-950/70 border border-red-800/80 text-[11px] text-red-300 flex items-center justify-between gap-2 animate-in fade-in">
-                                    <span className="truncate flex-1">⚠️ {ytDownloadErrors[idx]}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDownloadYtCandidate(cand, idx)}
-                                      className="px-2.5 py-1 rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold text-[10px] shrink-0 transition shadow flex items-center gap-1"
-                                    >
-                                      <RefreshCw className="w-2.5 h-2.5" />
-                                      <span>Thử lại</span>
-                                    </button>
-                                  </div>
-                                )}
-
-                                {/* Thanh tiến trình tải thời gian thực */}
-                                {isDownloading && (
-                                  <div className="mt-2.5 space-y-1">
-                                    <div className="flex items-center justify-between text-[10px]">
-                                      <span className="text-indigo-300 font-semibold flex items-center gap-1.5">
-                                        <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
-                                        {downloadInfo.statusText}
-                                      </span>
-                                      <span className="font-mono font-bold text-indigo-300">{downloadInfo.percent}%</span>
-                                    </div>
-                                    <div className="w-full bg-gray-800/80 rounded-full h-2 overflow-hidden border border-indigo-950/60 p-[1px]">
-                                      <div
-                                        className="bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 h-full rounded-full transition-all duration-300 ease-out shadow-sm"
-                                        style={{ width: `${downloadInfo.percent}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-
-                              <div className="shrink-0 flex items-center gap-2">
-                                <button
-                                  onClick={() => handleDownloadYtCandidate(cand, idx)}
-                                  disabled={isDownloading || isDownloaded}
-                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition ${
-                                    isDownloaded
-                                      ? 'bg-emerald-900/40 border border-emerald-600/50 text-emerald-300 cursor-default'
-                                      : isDownloading
-                                      ? 'bg-indigo-950 border border-indigo-500/80 text-indigo-300 cursor-wait'
-                                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md'
-                                  }`}
-                                >
-                                  {isDownloaded ? (
-                                    <>
-                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                      <span>Đã trong Studio</span>
-                                    </>
-                                  ) : isDownloading ? (
-                                    <>
-                                      <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping mr-0.5" />
-                                      <span className="font-mono font-bold">{downloadInfo.percent}%</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Download className="w-3.5 h-3.5" />
-                                      <span>Tải vào Studio</span>
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <input
-          ref={ytCookieFileInputRef}
-          type="file"
-          accept=".txt"
-          className="hidden"
-          onChange={handleUploadCookieFile}
-        />
-
-        {showCookiePasteModal && (
-          <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-150">
-            <div className="bg-[#141724] border border-gray-700 rounded-2xl p-5 max-w-lg w-full space-y-3 shadow-2xl">
-              <div className="flex items-center justify-between border-b border-gray-800 pb-2.5">
-                <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                  <span>📋</span> Dán nội dung Cookie YouTube
-                </h4>
-                <button onClick={() => setShowCookiePasteModal(false)} className="text-gray-400 hover:text-white text-sm">✕</button>
-              </div>
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] text-gray-400">
-                  Dán trực tiếp nội dung cookie từ tiện ích (định dạng Netscape):
-                </p>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const text = await navigator.clipboard.readText();
-                      if (text) setCookieInputText(text);
-                    } catch {}
-                  }}
-                  className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-                >
-                  <Clipboard className="w-3 h-3" />
-                  <span>Dán từ Clipboard</span>
-                </button>
-              </div>
-              <textarea
-                value={cookieInputText}
-                onChange={e => setCookieInputText(e.target.value)}
-                rows={8}
-                placeholder="# Netscape HTTP Cookie File&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;..."
-                className="w-full bg-black/60 border border-gray-700 rounded-xl p-3 text-[11px] font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-              />
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  onClick={() => setShowCookiePasteModal(false)}
-                  className="px-3.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded-xl"
-                >
-                  Hủy
-                </button>
-                <button
-                  onClick={handleSaveCookieText}
-                  disabled={!cookieInputText.trim()}
-                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl shadow"
-                >
-                  Lưu Cookie
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
+  const renderYouTubeModal = () => (
+    <YouTubeModal
+      showYtModal={showYtModal} setShowYtModal={setShowYtModal}
+      ytCookiesStatus={ytCookiesStatus}
+      handleQuickPasteCookiesFromClipboard={handleQuickPasteCookiesFromClipboard}
+      setShowCookiePasteModal={setShowCookiePasteModal}
+      ytCookieFileInputRef={ytCookieFileInputRef}
+      handleDeleteCookies={handleDeleteCookies}
+      handleUploadCookieFile={handleUploadCookieFile}
+      showCookieGuide={showCookieGuide} setShowCookieGuide={setShowCookieGuide}
+      ytBatchTab={ytBatchTab} setYtBatchTab={setYtBatchTab}
+      ytHistoryList={ytHistoryList}
+      ytCodePrefix={ytCodePrefix} handleUpdatePrefix={handleUpdatePrefix}
+      parseYtUrls={parseYtUrls}
+      ytUrl={ytUrl} setYtUrl={setYtUrl}
+      ytDupCheck={ytDupCheck}
+      copyAssetCode={copyAssetCode} ytCopiedAssetCode={ytCopiedAssetCode}
+      ytMode={ytMode} setYtMode={setYtMode}
+      ytStatus={ytStatus} handleAnalyzeYouTube={handleAnalyzeYouTube}
+      ytBatchText={ytBatchText} setYtBatchText={setYtBatchText}
+      ytBatchBusy={ytBatchBusy} handleBatchAddYouTube={handleBatchAddYouTube}
+      ytHistorySearch={ytHistorySearch} setYtHistorySearch={setYtHistorySearch}
+      ytHistoryMeta={ytHistoryMeta}
+      fetchYtHistory={fetchYtHistory}
+      ytHistoryLoading={ytHistoryLoading}
+      ytCopiedCode={ytCopiedCode} setYtCopiedCode={setYtCopiedCode}
+      ytError={ytError}
+      ytInfo={ytInfo} ytCandidates={ytCandidates}
+      ytDownloadAllBusy={ytDownloadAllBusy}
+      handleDownloadAllYtCandidates={handleDownloadAllYtCandidates}
+      ytDownloadedSet={ytDownloadedSet} ytDownloadingMap={ytDownloadingMap}
+      ytDownloadErrors={ytDownloadErrors}
+      handleDownloadYtCandidate={handleDownloadYtCandidate}
+      showCookiePasteModal={showCookiePasteModal}
+      cookieInputText={cookieInputText} setCookieInputText={setCookieInputText}
+      handleSaveCookieText={handleSaveCookieText}
+    />
+  );
 
   // CUT: cuts clip, returns path, does NOT send to edit yet
   const cutClip = async () => {
@@ -3484,272 +2697,23 @@ return [...without, entry];
   // each clip uses its OWN state+title
   // ── Uses ──
 
-  // ── Canvas Title Overlay Renderer ─────────────────────────────────────────
-  // Renders the title box at full 1080×1920 resolution using the same browser
-  // Canvas 2D engine that drives the live preview → guarantees identical
-  // word-wrap, stroke, padding, and positioning in the exported video.
-  //
-  // Works in main thread using a hidden <canvas> because OffscreenCanvas
-  // requires a Worker context for toBlob(). The canvas is 1080×1920 but
-  // never attached to the DOM, so no layout impact.
-  const buildTitleOverlayBlob = React.useCallback(async (clip, W = 1080, H = 1920) => {
-    const st    = { ...DEF, ...(clip.state || {}) };
-    const title = st.title_uppercase ? (clip.title || '').toUpperCase() : (clip.title || '');
-    if (!title.trim()) return null;
-
-    // Ensure bundled fonts are loaded (served from FastAPI)
-    const BUNDLED = { montserrat: 'Montserrat', luckiestguy: 'Luckiest Guy', nunito: 'Nunito', permanentmarker: 'Permanent Marker' };
-    const fontKey = (st.font_name || 'impact').toLowerCase();
-    if (BUNDLED[fontKey]) {
-      try {
-        const fontUrl = `${API}/font/file?key=${fontKey}`;
-        const face = new FontFace(BUNDLED[fontKey], `url(${fontUrl})`);
-        if (![...document.fonts].some(f => f.family === BUNDLED[fontKey] && f.status === 'loaded')) {
-          await face.load();
-          document.fonts.add(face);
-        }
-      } catch (_) { /* fallback gracefully */ }
-    }
-
-    const fontSize     = st.font_size || 52;
-    const fontFamily   = FONT_MAP[fontKey] || `"${fontKey}", Impact, sans-serif`;
-    const fontWeight   = st.font_bold ? 'bold' : 'normal';
-    const fontStyle    = st.font_italic ? 'italic' : 'normal';
-    const fontSpec     = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-
-    // ── Geometry — must exactly mirror _make_title_image in app.py ──
-    const boxMode         = st.box_mode || 'frame';
-    const isBubbleMode    = (boxMode === 'capcut' || boxMode === 'badges');
-    const marginX         = 26.67;
-    const fullContainerW  = W - 2 * marginX;
-    const wrapPct         = Math.max(0.3, Math.min(1.0, st.title_wrap_pct ?? 1.0));
-    const boxW            = fullContainerW * wrapPct;
-    const lPadX           = Math.max(6.0, Math.round(fontSize * 0.35));
-    const padX            = isBubbleMode ? (20.0 + lPadX) : 40.0;
-    const padY            = isBubbleMode ? Math.max(2.0, Math.round(fontSize * 0.16)) : 26.67;
-    const maxTextW        = Math.max(50.0, boxW - 2 * padX);
-
-    // ── Word wrap (use st.title_lines if present, else deterministic wrapTitleText) ──
-    const letterSp = st.letter_spacing ?? 0;
-    const lines = (Array.isArray(st.title_lines) && st.title_lines.length > 0)
-      ? st.title_lines
-      : wrapTitleText(title, fontSpec, maxTextW, letterSp);
-
-    // ── Canvas setup ──
-    const cvs = document.createElement('canvas');
-    cvs.width  = W;
-    cvs.height = H;
-    const ctx  = cvs.getContext('2d');
-    ctx.clearRect(0, 0, W, H);
-
-    // ── Parse colors ──
-    const parseHex = hex => {
-      if (!hex || hex.length < 7) return [255,255,255];
-      return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
-    };
-    const fgRgb   = parseHex(st.text_color_hex || '#ffffff');
-    const bgRgb   = parseHex(st.box_bg_color_hex || '#222222');
-    const boxAlpha = (st.box_opacity ?? 90) / 100;
-    const lineH   = (st.line_height || (boxMode === 'capcut' ? 1.35 : 1.2)) * fontSize;
-    // letterSp declared above (before offCtx) — do not re-declare
-
-    // ── Text position ──────────────────────────────────────────────────────────
-    // IMPORTANT: In the CSS preview, `top: yPct%; transform: translateY(-50%)`
-    // means the CENTER of the title box sits at text_y pixels from the top of
-    // the 1920px frame.  My canvas must match this: compute boxTopY so that the
-    // CENTER of the drawn rectangle is at textY.
-    const textX   = (st.text_x || 0);   // px offset from center at full 1080px width
-    const textY   = (st.text_y ?? 60);  // CENTER of the box in 1920px space
-    const boxRad  = st.box_radius ?? 40;  // matches CSS preview default (also in DEF)
-    const align   = st.text_align || 'left';
-
-    // ── Horizontal position: box centered at W/2 + textX offset ──
-    const boxLeft = W / 2 - boxW / 2 + textX;
-    const totalTextH = lines.length * lineH;
-
-    // ── Vertical: compute top of box so its CENTER is at textY ──
-    // frame:  box height = totalTextH + 2*padY
-    // capcut: first line starts at boxTopY, each line lineH tall + 2*lPadY
-    // badges: similar, but with gaps between lines
-    // We use frame geometry for the centering anchor; modes adjust from boxTopY.
-    const frameTotalH = totalTextH + 2 * padY;
-    const boxTopY     = textY - frameTotalH / 2;
-
-    ctx.save();
-
-    // ── Apply rotation around the box's visual center ──
-    const rotation   = (st.text_rotation || 0) * Math.PI / 180;
-    const boxCenterX = boxLeft + boxW / 2;
-    const boxCenterY = textY;   // the CENTER is exactly at textY (matching CSS)
-    if (rotation !== 0) {
-      ctx.translate(boxCenterX, boxCenterY);
-      ctx.rotate(rotation);
-      ctx.translate(-boxCenterX, -boxCenterY);
-    }
-
-
-    // ── Draw function for a rounded rect ──
-    const roundRect = (x, y, w, h, r) => {
-      r = Math.min(r, w/2, h/2);
-      ctx.beginPath();
-      ctx.moveTo(x + r, y);
-      ctx.lineTo(x + w - r, y);
-      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-      ctx.lineTo(x + w, y + h - r);
-      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-      ctx.lineTo(x + r, y + h);
-      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-      ctx.lineTo(x, y + r);
-      ctx.quadraticCurveTo(x, y, x + r, y);
-      ctx.closePath();
-    };
-
-    ctx.font = fontSpec;
-    ctx.letterSpacing = `${letterSp}px`;
-
-    const strokePx    = (st.stroke_enabled !== false && (st.stroke_width ?? 0) > 0) ? st.stroke_width : 0;
-    const strokeColor = st.stroke_color_hex || '#000000';
-    const [sr, sg, sb] = parseHex(strokeColor);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    if (boxMode === 'frame') {
-      // Full rectangular background box — top edge at boxTopY so center is at textY
-      const bgFillColor = `rgba(${bgRgb[0]},${bgRgb[1]},${bgRgb[2]},${boxAlpha})`;
-      const boxH = frameTotalH;
-      ctx.fillStyle = bgFillColor;
-      roundRect(boxLeft, boxTopY, boxW, boxH, boxRad);
-      ctx.fill();
-
-      // Draw each line
-      lines.forEach((line, i) => {
-        const ly = boxTopY + padY + i * lineH + fontSize * 0.8; // baseline
-        let lx;
-        if (align === 'center') lx = boxLeft + boxW / 2;
-        else if (align === 'right') lx = boxLeft + boxW - padX;
-        else lx = boxLeft + padX;
-
-        ctx.textAlign = align === 'center' ? 'center' : align === 'right' ? 'right' : 'left';
-        if (strokePx > 0) {
-          ctx.fillStyle = `rgba(${sr},${sg},${sb},1)`;
-          for (const [dx, dy] of [[-strokePx,-strokePx],[strokePx,-strokePx],[-strokePx,strokePx],[strokePx,strokePx],[0,-strokePx],[0,strokePx],[-strokePx,0],[strokePx,0]]) {
-            ctx.fillText(line, lx + dx, ly + dy);
-          }
-        }
-        ctx.fillStyle = `rgba(${fgRgb[0]},${fgRgb[1]},${fgRgb[2]},${(st.text_opacity ?? 100)/100})`;
-        ctx.fillText(line, lx, ly);
-      });
-
-    } else if (boxMode === 'capcut') {
-      // Per-line continuous bubble — start from boxTopY so the group center is at textY
-      const lPadX = Math.max(6, Math.round(fontSize * 0.35));
-      const lPadY = Math.max(2, Math.round(lineH * 0.16));
-      const effRad = Math.min(boxRad, Math.round((lineH + 2 * lPadY) * 0.30));
-
-      // Draw all merged background boxes first
-      ctx.fillStyle = `rgba(${bgRgb[0]},${bgRgb[1]},${bgRgb[2]},${boxAlpha})`;
-      lines.forEach((line, i) => {
-        const lw = ctx.measureText(line).width;
-        const ly = boxTopY + i * lineH;
-        let lx;
-        if (align === 'center') lx = boxLeft + padX + (maxTextW - lw) / 2;
-        else if (align === 'right') lx = boxLeft + boxW - padX - lw;
-        else lx = boxLeft + padX;
-
-        roundRect(lx - lPadX, ly - lPadY, lw + 2 * lPadX, lineH + 2 * lPadY, effRad);
-        ctx.fill();
-      });
-
-      // Draw text for all lines on top
-      lines.forEach((line, i) => {
-        const lw = ctx.measureText(line).width;
-        const ly = boxTopY + i * lineH;
-        let lx;
-        if (align === 'center') lx = boxLeft + padX + (maxTextW - lw) / 2;
-        else if (align === 'right') lx = boxLeft + boxW - padX - lw;
-        else lx = boxLeft + padX;
-
-        ctx.textAlign = 'left';
-        const baseline = ly + fontSize * 0.8;
-        if (strokePx > 0) {
-          ctx.fillStyle = `rgba(${sr},${sg},${sb},1)`;
-          for (const [dx, dy] of [[-strokePx,-strokePx],[strokePx,-strokePx],[-strokePx,strokePx],[strokePx,strokePx],[0,-strokePx],[0,strokePx],[-strokePx,0],[strokePx,0]]) {
-            ctx.fillText(line, lx + dx, baseline + dy);
-          }
-        }
-        ctx.fillStyle = `rgba(${fgRgb[0]},${fgRgb[1]},${fgRgb[2]},${(st.text_opacity ?? 100)/100})`;
-        ctx.fillText(line, lx, baseline);
-      });
-
-    } else {
-      // badges — separate pill per line, start from boxTopY
-      const lPadX = Math.max(6, Math.round(fontSize * 0.35));
-      const lPadY = Math.max(1, Math.round(lineH * 0.08));
-      const gap   = Math.max(2, Math.round(fontSize * 0.15));
-      const effRad = Math.min(boxRad, Math.round((lineH + 2 * lPadY) * 0.30));
-
-      // Draw backgrounds
-      ctx.fillStyle = `rgba(${bgRgb[0]},${bgRgb[1]},${bgRgb[2]},${boxAlpha})`;
-      lines.forEach((line, i) => {
-        const lw  = ctx.measureText(line).width;
-        const ly  = boxTopY + i * (lineH + gap);
-        let lx;
-        if (align === 'center') lx = boxLeft + padX + (maxTextW - lw) / 2;
-        else if (align === 'right') lx = boxLeft + boxW - padX - lw;
-        else lx = boxLeft + padX;
-
-        roundRect(lx - lPadX, ly - lPadY, lw + 2 * lPadX, lineH + 2 * lPadY, effRad);
-        ctx.fill();
-      });
-
-      // Draw text
-      lines.forEach((line, i) => {
-        const lw  = ctx.measureText(line).width;
-        const ly  = boxTopY + i * (lineH + gap);
-        let lx;
-        if (align === 'center') lx = boxLeft + padX + (maxTextW - lw) / 2;
-        else if (align === 'right') lx = boxLeft + boxW - padX - lw;
-        else lx = boxLeft + padX;
-
-        ctx.textAlign = 'left';
-        const baseline = ly + fontSize * 0.8;
-        if (strokePx > 0) {
-          ctx.fillStyle = `rgba(${sr},${sg},${sb},1)`;
-          for (const [dx, dy] of [[-strokePx,-strokePx],[strokePx,-strokePx],[-strokePx,strokePx],[strokePx,strokePx],[0,-strokePx],[0,strokePx],[-strokePx,0],[strokePx,0]]) {
-            ctx.fillText(line, lx + dx, baseline + dy);
-          }
-        }
-        ctx.fillStyle = `rgba(${fgRgb[0]},${fgRgb[1]},${fgRgb[2]},${(st.text_opacity ?? 100)/100})`;
-        ctx.fillText(line, lx, baseline);
-      });
-    }
-
-
-    ctx.restore();
-
-    // ── Convert to base64 PNG ──
-    return new Promise(resolve => cvs.toBlob(blob => {
-      if (!blob) { resolve(null); return; }
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]); // strip data:...;base64,
-      reader.readAsDataURL(blob);
-    }, 'image/png'));
-  }, []);   // no deps — pure function over args
-
 
   const startExport = async () => {
     if (!editQueue.length) { alert('No clips in Edit queue.'); return; }
     try {
-      // Generate canvas PNG overlays for every clip concurrently
-      const overlays = await Promise.all(
-        editQueue.map(c => buildTitleOverlayBlob(c).catch(() => null))
-      );
+      // Generate canvas PNG overlays and timed custom text PNGs for every clip concurrently
+      const [overlays, timedOverlays] = await Promise.all([
+        Promise.all(editQueue.map(c => buildTitleOverlayBlob(c).catch(() => null))),
+        Promise.all(editQueue.map(c => buildTimedCustomTextBlobs(c).catch(() => []))),
+      ]);
 
       const r = await post('/export/queue', {
         items: editQueue.map((c, i) => ({
-          clip_path:         c.clip_path || c.path,
-          title:             c.title || '',
-          state:             { ...DEF, ...(c.state || {}) },
-          title_overlay_b64: overlays[i] || null,
+          clip_path:           c.clip_path || c.path,
+          title:               c.title || '',
+          state:               { ...DEF, ...(c.state || {}) },
+          title_overlay_b64:   overlays[i] || null,
+          timed_text_overlays: timedOverlays[i] || [],
         })),
         threads:    config.export_threads || 2,
         crf:        config.export_crf || 20,
@@ -3869,24 +2833,29 @@ return [...without, entry];
       (b.end_time   !== undefined && b.end_time   > 0);
 
     const syncableBoxes = (srcState.blur_boxes || []).filter(b => !isTimedSubBox(b));
-    const syncableState = { ...srcState, blur_boxes: syncableBoxes };
+    // CRITICAL: Explicitly exclude clip-specific text metadata (title, title_lines) from syncableState!
+    const { title: _srcTitle, title_lines: _srcLines, ...cleanSyncableState } = srcState;
+    const syncableState = { ...cleanSyncableState, blur_boxes: syncableBoxes };
 
     setEditQueue(prev => prev.map((item, i) => {
       if (i === selEditIdx) return item; // leave source untouched
       // F3: when a selection is active, only sync to selected items
       if (selEditIdxs.size > 1 && !selEditIdxs.has(i)) return item;
       const targetTimedBoxes = (item.state?.blur_boxes || []).filter(isTimedSubBox);
+      const targetTitle = item.title || item.state?.title || '';
       const newState = {
         ...DEF,
         ...syncableState,
+        title: targetTitle,
+        title_lines: null, // Clear foreign cached lines so this clip computes its OWN lines!
         blur_boxes: [...syncableBoxes, ...targetTimedBoxes],
       };
 
       // CRITICAL FIX: persist synced state to server so that Bulk Subtitle "Apply & Dismiss"
       // (which fetches server state) doesn't revert these settings back to pre-sync values.
-      // Strip `title` from patch — server treats it specially and would overwrite clip's own title.
-      const { title: _ignored, ...patchWithoutTitle } = newState;
-      post('/edit_queue/update', { index: i, patch: patchWithoutTitle });
+      // Strip `title` and `title_lines` from patch so each clip retains its own title text.
+      const { title: _ignored, title_lines: _ignoredL, ...patchWithoutTitle } = newState;
+      post('/edit_queue/update', { index: i, patch: { ...patchWithoutTitle, title_lines: null } });
 
       return { ...item, state: newState };
     }));
@@ -4171,19 +3140,42 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
         {selVideo ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* ── Results header ── */}
-            <div className="shrink-0 px-3 py-1.5 border-b border-gray-800/40 bg-gray-900/30 flex items-center justify-between">
+            <div className="shrink-0 px-3 py-1.5 border-b border-gray-800/40 bg-gray-900/30 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 truncate">
                 <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">RESULTS</span>
                 <span className="text-[9px] text-gray-400 truncate">{selVideo.name}</span>
               </div>
-              <button
-                onClick={e => reanalyzeVideo(selVideo.path, e)}
-                className="px-2 py-0.5 bg-gray-800/80 hover:bg-amber-950/50 border border-gray-700/60 hover:border-amber-600/50 rounded text-[9px] text-gray-300 hover:text-amber-300 flex items-center gap-1 transition shrink-0"
-                title="Chạy lại phân tích cho video này"
-              >
-                <RefreshCw className="w-2.5 h-2.5 text-amber-400" />
-                <span>Phân tích lại video này</span>
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* ── Score Filter ── */}
+                <div className="flex items-center gap-1 bg-gray-950/80 border border-gray-800 rounded px-2 py-0.5 shadow-sm" title="Bộ lọc điểm: Chỉ hiển thị và chọn các cảnh có điểm viral từ mức này trở lên">
+                  <span className="text-[9px] text-amber-400 font-bold flex items-center gap-0.5">⭐ Lọc:</span>
+                  <select
+                    value={minScoreFilter}
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      setMinScoreFilter(val);
+                      localStorage.setItem('minScoreFilter', String(val));
+                      post('/config', { min_viral_score: val });
+                      setConfig(prev => ({ ...prev, min_viral_score: val }));
+                    }}
+                    className="bg-transparent text-[9px] font-bold text-amber-300 focus:outline-none cursor-pointer"
+                  >
+                    <option value={0} className="bg-gray-900 text-gray-200">Tất cả điểm</option>
+                    <option value={6} className="bg-gray-900 text-amber-300">&gt; 6/10 (Chuẩn)</option>
+                    <option value={7} className="bg-gray-900 text-amber-300">≥ 7/10 (Khá hay)</option>
+                    <option value={8} className="bg-gray-900 text-amber-300">≥ 8/10 (Rất hay)</option>
+                    <option value={9} className="bg-gray-900 text-amber-300">≥ 9/10 (Cực phẩm)</option>
+                  </select>
+                </div>
+                <button
+                  onClick={e => reanalyzeVideo(selVideo.path, e)}
+                  className="px-2 py-0.5 bg-gray-800/80 hover:bg-amber-950/50 border border-gray-700/60 hover:border-amber-600/50 rounded text-[9px] text-gray-300 hover:text-amber-300 flex items-center gap-1 transition shrink-0"
+                  title="Chạy lại phân tích cho video này"
+                >
+                  <RefreshCw className="w-2.5 h-2.5 text-amber-400" />
+                  <span>Phân tích lại</span>
+                </button>
+              </div>
             </div>
 
             {selVideo.candidates?.length > 0 ? (
@@ -4200,6 +3192,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                     })();
                     const thumbUrl = `/api/clip/thumbnail?path=${encodeURIComponent(selVideo.path)}&start=${startSec}`;
                     const isSelected = selCand === i;
+                    const cScore = Number(c.viral_score ?? c.score ?? 7);
                     return (
                       <button
                         key={i}
@@ -4207,7 +3200,7 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                         className={`flex-none snap-start rounded-lg overflow-hidden border-2 transition focus:outline-none ${
                           isSelected ? 'border-indigo-500 ring-1 ring-indigo-400/60' : 'border-gray-800 hover:border-gray-600'
                         }`}
-                        title={`Clip #${c.id || i + 1} · ${c.start_time} → ${c.end_time || '+16s'}`}
+                        title={`Clip #${c.id || i + 1} · ⭐${cScore}/10 · ${c.start_time} → ${c.end_time || '+16s'}`}
                       >
                         <div className="relative w-[45px] h-[80px] bg-gray-900">
                           <img
@@ -4218,10 +3211,21 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                             loading="lazy"
                           />
                           {/* Gradient + label */}
-                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-0.5 pb-0.5 pt-2">
-                            <p className="text-[7px] font-bold text-white leading-none text-center">
-                              #{c.id || i + 1}
-                            </p>
+                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-0.5 pb-0.5 pt-2">
+                            <div className="flex items-center justify-between px-0.5 mb-0.5">
+                              <p className="text-[7px] font-bold text-white leading-none">
+                                #{c.id || i + 1}
+                              </p>
+                              <span className={`text-[6.5px] font-black px-1 py-0.2 rounded leading-none ${
+                                cScore >= 8.5
+                                  ? 'bg-amber-500 text-black font-extrabold shadow-sm'
+                                  : cScore > 6
+                                  ? 'bg-indigo-600 text-white font-bold'
+                                  : 'bg-gray-700 text-gray-300'
+                              }`}>
+                                ⭐{cScore}
+                              </span>
+                            </div>
                             <p className="text-[6px] text-gray-300 leading-none text-center truncate">
                               {c.start_time?.slice(0, 5)}
                             </p>
@@ -4330,12 +3334,31 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                   </div>
                 </div>
 
-                {/* Reason / description */}
-                {(cand?.reason || cand?.description) && (
-                  <div className="bg-gray-900/50 border border-gray-800/50 rounded-lg p-2">
-                    <p className="text-[10px] text-gray-400 leading-relaxed">{cand.reason || cand.description}</p>
+                {/* Reason / description & Viral Score */}
+                <div className="bg-gray-900/50 border border-gray-800/50 rounded-lg p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-black flex items-center gap-1 border ${
+                        (cand?.viral_score ?? 7) >= 8.5
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          : (cand?.viral_score ?? 7) > 6
+                          ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                          : 'bg-gray-800/50 text-gray-400 border-gray-700/40'
+                      }`}>
+                        <span>⭐ Điểm Viral:</span>
+                        <span className="text-[11px] font-extrabold">{cand?.viral_score ?? 7}/10</span>
+                      </span>
+                      {cand?.score_reason && (
+                        <span className="text-[9.5px] text-gray-300 italic">
+                          — {cand.score_reason}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                )}
+                  {(cand?.reason || cand?.description) && (
+                    <p className="text-[10px] text-gray-400 leading-relaxed">{cand.reason || cand.description}</p>
+                  )}
+                </div>
 
                 {/* ???? Viral Titles — click to select & copy ???? */}
                 {titles5.length > 0 && (
@@ -4703,6 +3726,34 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
                 <Slider label="Line Height" value={st.line_height ?? 1.2} min={0.8} max={2.5} step={0.05} onChange={v => patchEdit({ line_height: v })} />
                 <Slider label="Title Y" value={st.text_y} min={0} max={1800} onChange={v => patchEdit({ text_y: v })} unit="px" />
                 <Slider label="Wrap %" value={st.title_wrap_pct} min={0.3} max={1.0} step={0.05} onChange={v => patchEdit({ title_wrap_pct: v })} />
+              </Section>
+
+              {/* ── Freeform CapCut Custom Text & Emoji Layers ── */}
+              <Section id="section-custom-text" title="Chữ & Icon Tự Do (CapCut Text)" icon={<Type className="w-3 h-3 text-cyan-400" />} active={selectedLayer?.type === 'custom_text'} defaultOpen>
+                <CustomTextInspector
+                  customTexts={st.custom_texts || []}
+                  selCustomTextIdx={selCustomTextIdx}
+                  setSelCustomTextIdx={setSelCustomTextIdx}
+                  onSelectLayer={selectAndFocusLayer}
+                  onUpdateCustomTexts={updateCustomTexts}
+                  onSyncCustomTextsToAll={() => {
+                    const srcCustom = JSON.parse(JSON.stringify(st.custom_texts || []));
+                    setEditQueue(prev => prev.map((item, i) => {
+                      if (i === selEditIdx) return item;
+                      if (selEditIdxs.size > 1 && !selEditIdxs.has(i)) return item;
+                      const cloned = JSON.parse(JSON.stringify(srcCustom));
+                      post('/edit_queue/update', { index: i, patch: { custom_texts: cloned } });
+                      return { ...item, state: { ...(item.state || {}), custom_texts: cloned } };
+                    }));
+                  }}
+                  onEnableFbMockup={(val) => setFbMockupEnabled(val)}
+                  currentTime={currentTime}
+                  clipDuration={duration || 16}
+                  FontPicker={FontPicker}
+                  Slider={Slider}
+                  Toggle={Toggle}
+                  ColorPicker={ColorPicker}
+                />
               </Section>
 
               {/* ── Custom Audio & Voiceover Section ── */}
@@ -6167,6 +5218,59 @@ const poll = async () => {
             ? <div className="text-center text-slate-600 m-auto"><Film className="w-12 h-12 mx-auto mb-2 opacity-40 text-slate-500" /><p className="text-xs text-slate-400">← Chọn clip từ Hàng đợi bên trái để mở khung biên tập</p></div>
             : <>
               <p className="text-[11px] text-slate-300 truncate max-w-sm font-medium shrink-0 tracking-tight">{currentEditItem?.title}</p>
+
+              {/* 📱 Facebook Reels Mobile UI Mockup Toggle Bar */}
+              <div className="w-full max-w-[324px] flex items-center justify-between gap-1.5 bg-gray-900/90 border border-gray-800/80 rounded-xl px-2.5 py-1.5 shadow shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setFbMockupEnabled(v => !v)}
+                  className={`px-2 py-1 rounded-lg text-[8.5px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                    fbMockupEnabled
+                      ? 'bg-blue-600 text-white shadow-[0_0_12px_rgba(37,99,235,0.6)]'
+                      : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+                  }`}
+                  title="Bật/tắt khung giao diện Facebook Reels trên điện thoại để căn chữ chỉ thẳng vào nút Comment (không dính vào video xuất ra)"
+                >
+                  <span>📱 Khung UI Facebook: {fbMockupEnabled ? 'BẬT' : 'TẮT'}</span>
+                </button>
+
+                {fbMockupEnabled && (
+                  <div className="flex items-center gap-1.5 flex-1 justify-end">
+                    <div className="flex rounded-md overflow-hidden border border-gray-700 text-[7.5px]">
+                      <button
+                        type="button"
+                        onClick={() => setFbMockupMode('vector')}
+                        className={`px-1.5 py-0.5 font-semibold cursor-pointer ${
+                          fbMockupMode === 'vector' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400'
+                        }`}
+                        title="Khung UI Facebook sắc nét trong suốt"
+                      >
+                        UI Chuẩn
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFbMockupMode('image')}
+                        className={`px-1.5 py-0.5 font-semibold cursor-pointer ${
+                          fbMockupMode === 'image' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400'
+                        }`}
+                        title="Đè ảnh chụp màn hình mẫu gốc của bạn"
+                      >
+                        Ảnh mẫu
+                      </button>
+                    </div>
+                    <input
+                      type="range"
+                      min={20}
+                      max={100}
+                      value={fbMockupOpacity}
+                      onChange={e => setFbMockupOpacity(Number(e.target.value))}
+                      className="w-12 accent-blue-500 h-1 bg-gray-700 rounded cursor-pointer"
+                      title={`Độ mờ khung UI: ${fbMockupOpacity}%`}
+                    />
+                  </div>
+                )}
+              </div>
+
               {/* Preview canvas — pointerdown starts drag or blur drawing */}
               {/* Outer wrapper: overflow-hidden, shrink-0 ensures canvas is never squished by flexbox */}
               <div ref={canvasRef}
@@ -6625,7 +5729,11 @@ const poll = async () => {
                         const fontSpec1080 = `${editState?.font_italic ? 'italic' : 'normal'} ${editState?.font_bold ? 'bold' : 'normal'} ${fontSize1080}px ${fontFamily}`;
                         const letterSp1080 = editState?.letter_spacing ?? 0;
 
-                        const lines = (Array.isArray(editState?.title_lines) && editState.title_lines.length > 0)
+                        const cleanPreviewTitle = titleText.replace(/\s+/g, ' ').trim().toLowerCase();
+                        const hasValidPreviewLines = Array.isArray(editState?.title_lines) && editState.title_lines.length > 0 &&
+                          editState.title_lines.join(' ').replace(/\s+/g, ' ').trim().toLowerCase() === cleanPreviewTitle;
+
+                        const lines = hasValidPreviewLines
                           ? editState.title_lines
                           : wrapTitleText(titleText, fontSpec1080, maxTextW1080, letterSp1080);
 
@@ -7199,6 +6307,24 @@ const stTime = ovl.start_time ?? 0;
                     </div>
                   );
                 })}
+
+                {/* ✨ Freeform CapCut Custom Text & Emoji Layers on 9:16 Stage */}
+                <CustomTextStageLayer
+                  customTexts={editState?.custom_texts || []}
+                  selectedLayer={selectedLayer}
+                  selCustomTextIdx={selCustomTextIdx}
+                  currentTime={currentTime}
+                  canvasRef={canvasRef}
+                  onSelectLayer={selectAndFocusLayer}
+                  onUpdateCustomTexts={updateCustomTexts}
+                />
+
+                {/* 📱 Facebook Reels Mobile UI Mockup Overlay (Preview-only, never exported) */}
+                <FacebookReelsMockup
+                  enabled={fbMockupEnabled}
+                  mode={fbMockupMode}
+                  opacity={fbMockupOpacity}
+                />
 
                 <div className="absolute bottom-2 inset-x-0 text-center pointer-events-none z-10">
                   <span className="bg-black/60 px-2 py-0.5 rounded-full text-[8px] text-gray-500">

@@ -1,6 +1,6 @@
 {
-  "version": "2.11.0",
-  "release_date": "2026-10-12",
-  "changelog": "- Tối ưu Bố cục Studio 3 cột công thái học chuẩn NLE (Hàng đợi bên trái -> Canvas xem trước ở giữa -> Inspector thuộc tính bên phải 320px)\n- Nâng cấp Story Mode: thời lượng video phân tích chuẩn từ 1 phút 30s đến 2 phút (90–120s)\n- Sửa triệt để tính năng Auto Logo: tự động nhận diện và che logo góc tĩnh, chống nhiễu viền đen letterbox, bám dính toạ độ video\n- Tối ưu bảng màu Deep Slate chuẩn phòng dựng, tăng độ tương phản WCAG AA\n- Phân rã kiến trúc mã nguồn modular UI components và API service layer",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.11.0/OpenCutStudio_v2.11.0.zip"
+  "version": "2.12.0",
+  "release_date": "2026-11-09",
+  "changelog": "- Nâng cấp tải và cắt cảnh YouTube sau khi phân tích lên 3 luồng chạy song song (ThreadPoolExecutor 3 workers), giữ nguyên thứ tự mã định danh và đẩy clip realtime sang Tab 2\n- Thêm hệ thống Layer Chữ & Emoji tự do kiểu CapCut: thêm/xóa không giới hạn, kéo thả trực tiếp trên màn hình, hẹn giờ xuất hiện (start/end time), tạo nhanh CTA 'Check Comments + 👉' và đồng bộ hàng loạt\n- Thêm khung ướm thử giao diện điện thoại Facebook Reels (bật/tắt tùy ý trên màn hình Preview để căn chỉnh chữ và ngón tay chỉ chuẩn xác vào nút Bình luận)\n- Nâng cấp Tra Cứu Mã Video Hàng Loạt: dán danh sách nhiều mã video, mã clip con, tên file hoặc link cùng lúc; cảnh báo mã không tồn tại; hỗ trợ Copy tất cả link/mã hoặc Dùng lại hàng loạt\n- Khắc phục triệt để lỗi tải cắt đoạn YouTube ('Requested format is not available' / 'file chỉ có 0 bytes')\n- Nâng cấp kiến trúc đẩy trạng thái realtime qua Server-Sent Events (SSE), tách module hộp thoại hệ thống native_dialogs.py và bộ lọc khử trùng lặp tiêu đề 3 lớp",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.12.0/OpenCutStudio_v2.12.0.zip"
 }

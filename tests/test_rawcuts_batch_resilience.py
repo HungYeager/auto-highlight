@@ -21,13 +21,24 @@ from app import _find_tool, _gemini_transcribe, _whisper_transcribe
 
 class TestRawCutsBatchResilience(unittest.TestCase):
     def setUp(self):
+        import copy
         self.client = TestClient(app)
         self.temp_dir = tempfile.mkdtemp(prefix="opencut_test_res_")
         self.out_dir = Path(self.temp_dir) / "output"
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        app_state.config["output_folder"] = str(self.out_dir)
+        with STATE_LOCK:
+            self._orig_output_folder = app_state.config.get("output_folder")
+            self._orig_batches = copy.deepcopy(app_state.batches)
+            self._orig_video_results = copy.deepcopy(app_state.video_results)
+            self._orig_video_files = list(app_state.video_files)
+            app_state.config["output_folder"] = str(self.out_dir)
 
     def tearDown(self):
+        with STATE_LOCK:
+            app_state.config["output_folder"] = self._orig_output_folder
+            app_state.batches = self._orig_batches
+            app_state.video_results = self._orig_video_results
+            app_state.video_files = self._orig_video_files
         try:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         except Exception:
@@ -301,7 +312,71 @@ class TestRawCutsBatchResilience(unittest.TestCase):
             self.assertEqual(data3["total"], 4)
             mock_run_force.assert_called_once()
 
+    def test_direct_import_fast_stream_copy(self):
+        """Test that direct import avoids heavy re-encoding for full videos."""
+        from server import _run_direct_edit_import
+        dummy_video = Path(self.temp_dir) / "direct_vid.mp4"
+        dummy_video.write_bytes(b"dummy_direct_content")
+
+        with patch("server.get_video_duration", return_value=1282.0), \
+             patch("server.app_state.get_current_output_folder", return_value=str(self.out_dir)), \
+             patch("server.subprocess.run") as mock_run, \
+             patch("server.cut_clip_exact") as mock_cut:
+            
+            def _fake_copy(cmd, **kwargs):
+                dst = Path(cmd[-1])
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(b"x" * 1024)
+                return MagicMock(returncode=0)
+
+            mock_run.side_effect = _fake_copy
+
+            _run_direct_edit_import([str(dummy_video)])
+
+            # Should have called fast ffmpeg -c copy, not cut_clip_exact
+            mock_cut.assert_not_called()
+            mock_run.assert_called_once()
+            call_cmd = mock_run.call_args[0][0]
+            self.assertIn("-c", call_cmd)
+            self.assertIn("copy", call_cmd)
+
+            # Item should be in edit queue
+            with STATE_LOCK:
+                matches = [e for e in app_state.edit_queue if "direct_vid_highlight_00-00-00.mp4" in e["name"]]
+                self.assertTrue(len(matches) > 0)
+
+    def test_cut_clip_exact_dynamic_timeout(self):
+        """Test that cut_clip_exact uses dynamic timeout proportional to duration."""
+        from app import cut_clip_exact, ToolLogger
+        dummy_src = Path(self.temp_dir) / "test_cut_src.mp4"
+        dummy_src.write_bytes(b"x" * 2048)
+        dummy_dst = Path(self.temp_dir) / "test_cut_dst.mp4"
+
+        logger = MagicMock(spec=ToolLogger)
+
+        with patch("app.get_video_duration", return_value=1282.0), \
+             patch("app.BEST_ENCODER", "libx264"), \
+             patch("app.subprocess.run") as mock_subrun:
+
+            # Simulate failure on copy so it reaches CPU branch
+            def _fake_run(cmd, **kwargs):
+                if "-c" in cmd and "copy" in cmd:
+                    return MagicMock(returncode=1)
+                dummy_dst.write_bytes(b"x" * 1024)
+                return MagicMock(returncode=0)
+
+            mock_subrun.side_effect = _fake_run
+
+            cut_clip_exact(dummy_src, "00:00:00", dummy_dst, logger, duration=1282)
+
+            # Check that CPU call had timeout >= 1282 * 3
+            cpu_calls = [c for c in mock_subrun.call_args_list if "libx264" in c[0][0]]
+            self.assertTrue(len(cpu_calls) > 0)
+            timeout_used = cpu_calls[0][1].get("timeout")
+            self.assertGreaterEqual(timeout_used, 1282 * 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
