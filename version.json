@@ -1,8 +1,8 @@
 {
-  "version": "2.13.0",
-  "min_required_version": "2.13.0",
+  "version": "2.13.1",
+  "min_required_version": "2.13.1",
   "force_update": true,
-  "release_date": "2026-11-09",
-  "changelog": "- Khóa phiên bản cũ bắt buộc nâng cấp (Mandatory Version Gate) & tự động dọn sạch 100% file bản cũ khi cập nhật qua Launcher\n- Vượt giới hạn Rate-Limit 60 lần/giờ của GitHub API khi nhiều máy chung mạng WiFi cùng kiểm tra bản mới\n- Nâng cấp tải và cắt cảnh YouTube sau phân tích lên 3 luồng chạy song song (ThreadPoolExecutor 3 workers), giữ nguyên thứ tự mã định danh và đẩy clip realtime sang Tab 2\n- Thêm hệ thống Layer Chữ & Emoji tự do kiểu CapCut: thêm/xóa không giới hạn, kéo thả trực tiếp trên màn hình, hẹn giờ xuất hiện (start/end time), tạo nhanh CTA 'Check Comments + 👉' và đồng bộ hàng loạt\n- Thêm khung ướm thử giao diện điện thoại Facebook Reels (bật/tắt tùy ý trên màn hình Preview)\n- Nâng cấp Tra Cứu Mã Video Hàng Loạt & khắc phục triệt để lỗi tải cắt đoạn YouTube ('Requested format is not available')",
-  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.13.0/OpenCutStudio_v2.13.0.zip"
+  "release_date": "2026-11-10",
+  "changelog": "- Bổ sung thông tin Bản quyền Nguyễn Phú Hưng & Hỗ trợ kỹ thuật qua Zalo (0372859185) kèm mã QR quét trực tiếp\n- Khóa phiên bản cũ bắt buộc nâng cấp (Mandatory Version Gate) & tự động dọn sạch 100% file bản cũ khi cập nhật qua Launcher\n- Vượt giới hạn Rate-Limit 60 lần/giờ của GitHub API khi nhiều máy chung mạng WiFi cùng kiểm tra bản mới\n- Nâng cấp tải và cắt cảnh YouTube sau phân tích lên 3 luồng chạy song song (ThreadPoolExecutor 3 workers), giữ nguyên thứ tự mã định danh và đẩy clip realtime sang Tab 2\n- Thêm hệ thống Layer Chữ & Emoji tự do kiểu CapCut & khung ướm thử điện thoại Facebook Reels\n- Nâng cấp Tra Cứu Mã Video Hàng Loạt & khắc phục triệt để lỗi tải cắt đoạn YouTube",
+  "download_url": "https://github.com/HungYeager/auto-highlight/releases/download/v2.13.1/OpenCutStudio_v2.13.1.zip"
 }

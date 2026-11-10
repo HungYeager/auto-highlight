@@ -7181,7 +7181,7 @@ return (
             <Film className="w-3.5 h-3.5 text-indigo-400" />
           </div>
           <span className="text-sm font-bold text-slate-100 tracking-tight">Viral Bodycam Clipper</span>
-          <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.13.0'}</span>
+          <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.13.1'}</span>
           <button
             onClick={() => setShowSupportModal(true)}
             className="hidden md:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[10px] font-medium transition cursor-pointer shadow-sm"
@@ -7439,7 +7439,7 @@ return (
 
             <div className="text-center space-y-1">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold uppercase tracking-wider">
-                OpenCut Bodycam Studio v{updateStatus?.local_version || '2.13.0'}
+                OpenCut Bodycam Studio v{updateStatus?.local_version || '2.13.1'}
               </span>
               <h3 className="text-base font-extrabold text-white pt-1">
                 Bản quyền của Nguyễn Phú Hưng
