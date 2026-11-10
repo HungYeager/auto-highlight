@@ -227,8 +227,8 @@ class LauncherApp(tk.Tk):
         ver_text = f"v{local_ver}" if local_ver != "0.0.0" else "Khởi tạo lần đầu"
         self.footer_lbl = tk.Label(
             self,
-            text=ver_text,
-            font=("Consolas", 8),
+            text=f"{ver_text}  •  © Nguyễn Phú Hưng  •  Hỗ trợ Zalo: 0372859185",
+            font=("Segoe UI", 8),
             fg="#64748b",
             bg="#0c0d16"
         )

@@ -2035,6 +2035,8 @@ const addFiles = async () => {
 
   const [updateStatus, setUpdateStatus] = useState(null);
   const [updating, setUpdating] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+  const [copiedZaloPhone, setCopiedZaloPhone] = useState(false);
 
   const checkAppUpdate = useCallback(async () => {
     try {
@@ -3106,6 +3108,30 @@ const errLogs    = logs.filter(l => l.level === 'error').length;
             <button onClick={pickFolder} className="px-2 py-1 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded text-[9px] font-medium shrink-0" title="Change Output Folder">
               Change
             </button>
+          </div>
+        </div>
+
+        {/* ── Copyright & Zalo Support Card (Subtle Bottom Sidebar) ── */}
+        <div
+          onClick={() => setShowSupportModal(true)}
+          className="border-t border-gray-800/70 bg-[#0b0d14] hover:bg-[#131724] px-2.5 py-2 flex items-center gap-2.5 cursor-pointer transition group"
+          title="Bấm để phóng to mã QR Zalo hỗ trợ kỹ thuật"
+        >
+          <img
+            src="/zalo_qr_support.png"
+            alt="QR Zalo Hỗ Trợ"
+            className="w-9 h-9 rounded-md bg-white p-0.5 object-contain shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+          />
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="text-[9.5px] font-bold text-slate-200 truncate">
+              © Nguyễn Phú Hưng
+            </p>
+            <p className="text-[8.5px] text-sky-400 font-medium truncate mt-0.5">
+              Zalo hỗ trợ: <span className="font-mono font-bold text-sky-300">0372859185</span>
+            </p>
+            <span className="inline-block mt-0.5 text-[7.5px] text-indigo-300 group-hover:text-indigo-200 underline">
+              Bấm xem mã QR ↗
+            </span>
           </div>
         </div>
       </div>
@@ -7107,6 +7133,30 @@ const stTime = ovl.start_time ?? 0;
             )}
             {isExporting && <p className="text-[8px] text-emerald-400 text-center truncate">{exportProg.current}</p>}
           </div>
+
+          {/* ── Copyright & Zalo Support Card (Subtle Bottom Queue Sidebar) ── */}
+          <div
+            onClick={() => setShowSupportModal(true)}
+            className="shrink-0 border-t border-gray-800/70 bg-[#0b0d14] hover:bg-[#131724] px-2.5 py-2 flex items-center gap-2.5 cursor-pointer transition group"
+            title="Bấm để phóng to mã QR Zalo hỗ trợ kỹ thuật"
+          >
+            <img
+              src="/zalo_qr_support.png"
+              alt="QR Zalo Hỗ Trợ"
+              className="w-9 h-9 rounded-md bg-white p-0.5 object-contain shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+            />
+            <div className="min-w-0 flex-1 leading-tight">
+              <p className="text-[9.5px] font-bold text-slate-200 truncate">
+                © Nguyễn Phú Hưng
+              </p>
+              <p className="text-[8.5px] text-sky-400 font-medium truncate mt-0.5">
+                Zalo hỗ trợ: <span className="font-mono font-bold text-sky-300">0372859185</span>
+              </p>
+              <span className="inline-block mt-0.5 text-[7.5px] text-indigo-300 group-hover:text-indigo-200 underline">
+                Bấm xem mã QR ↗
+              </span>
+            </div>
+          </div>
         </div>
       );
 
@@ -7132,6 +7182,16 @@ return (
           </div>
           <span className="text-sm font-bold text-slate-100 tracking-tight">Viral Bodycam Clipper</span>
           <span className="text-[10px] text-slate-400 font-mono">v{updateStatus?.local_version || '2.13.0'}</span>
+          <button
+            onClick={() => setShowSupportModal(true)}
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[10px] font-medium transition cursor-pointer shadow-sm"
+            title="Bản quyền Nguyễn Phú Hưng — Bấm để xem mã QR & Liên hệ hỗ trợ Zalo 0372859185"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+            <span>© Nguyễn Phú Hưng</span>
+            <span className="text-slate-500">•</span>
+            <span className="text-sky-200 font-semibold">Zalo: 0372859185</span>
+          </button>
           {updateStatus?.has_update && (
             <button
               onClick={() => handleApplyUpdateInApp(false)}
@@ -7358,6 +7418,83 @@ return (
 
       {/* ── YouTube Direct Visual Analysis & Segment Download Modal ── */}
       {renderYouTubeModal()}
+
+      {/* ── Author Copyright & Zalo QR Support Modal ── */}
+      {showSupportModal && (
+        <div
+          className="fixed inset-0 z-[9990] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowSupportModal(false)}
+        >
+          <div
+            className="w-full max-w-sm bg-[#111420] border border-sky-500/30 rounded-2xl shadow-2xl p-5 text-slate-100 space-y-4 relative"
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowSupportModal(false)}
+              className="absolute top-3.5 right-3.5 text-slate-400 hover:text-white bg-slate-800/70 hover:bg-slate-700 rounded-lg p-1.5 transition"
+              title="Đóng"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="text-center space-y-1">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold uppercase tracking-wider">
+                OpenCut Bodycam Studio v{updateStatus?.local_version || '2.13.0'}
+              </span>
+              <h3 className="text-base font-extrabold text-white pt-1">
+                Bản quyền của Nguyễn Phú Hưng
+              </h3>
+              <p className="text-xs text-slate-400">
+                Liên hệ hỗ trợ kỹ thuật &amp; cấp quyền sử dụng qua Zalo
+              </p>
+            </div>
+
+            {/* QR Code Card */}
+            <div className="bg-white rounded-2xl p-3.5 mx-auto w-56 shadow-xl border-4 border-sky-500/20 flex flex-col items-center">
+              <img
+                src="/zalo_qr_support.png"
+                alt="Mã QR Zalo Nguyễn Phú Hưng - 0372859185"
+                className="w-full h-auto rounded-lg object-contain"
+              />
+              <span className="text-[10px] font-bold text-slate-700 mt-1">
+                Quét mã QR bằng ứng dụng Zalo
+              </span>
+            </div>
+
+            {/* Phone + Action Buttons */}
+            <div className="bg-[#0b0d14] border border-slate-800 rounded-xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">Hỗ trợ qua Zalo:</span>
+                <span className="text-sm font-mono font-extrabold text-sky-400 tracking-wide">
+                  0372859185
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText('0372859185');
+                    setCopiedZaloPhone(true);
+                    setTimeout(() => setCopiedZaloPhone(false), 2000);
+                  }}
+                  className="flex-1 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                >
+                  <Copy className="w-3.5 h-3.5 text-sky-400" />
+                  <span>{copiedZaloPhone ? 'Đã copy SĐT!' : 'Copy SĐT'}</span>
+                </button>
+                <a
+                  href="https://zalo.me/0372859185"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-sky-950/50 transition"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Mở chat Zalo</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Mandatory Force-Update Gate Modal (Khóa phiên bản cũ bắt buộc nâng cấp) ── */}
       {updateStatus?.has_update && updateStatus?.force_update !== false && (
